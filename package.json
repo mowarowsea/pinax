@@ -16,7 +16,8 @@
     "probe": "node --no-warnings=ExperimentalWarning --import tsx src/probe.ts",
     "covers": "node --no-warnings=ExperimentalWarning --import tsx src/cli-covers.ts",
     "whoami": "node --no-warnings=ExperimentalWarning --import tsx src/cli-whoami.ts",
-    "published": "node --no-warnings=ExperimentalWarning --import tsx src/cli-published.ts"
+    "published": "node --no-warnings=ExperimentalWarning --import tsx src/cli-published.ts",
+    "inbox": "node --no-warnings=ExperimentalWarning --import tsx src/cli-inbox.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.3",

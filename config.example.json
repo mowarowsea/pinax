@@ -9,6 +9,12 @@
       "label": "NAS 蔵書",
       "path": "\\\\192.168.3.30\\disk1_pt1\\manga",
       "kind": "shelf"
+    },
+    {
+      "id": "inbox",
+      "label": "受け入れトレイ",
+      "path": "Z:\\90_新悟スペース\\JDownLoaderダウンロード",
+      "kind": "inbox"
     }
   ],
   "scan": {

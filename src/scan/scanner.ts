@@ -192,6 +192,13 @@ export async function scanRoot(db: Db, root: LibraryRoot): Promise<ScanResult> {
 export async function scanAll(db: Db, roots: LibraryRoot[]): Promise<ScanResult[]> {
   const out: ScanResult[] = [];
   // 1 根ずつ直列に。NAS を並列に叩いても速くならず、失敗の原因だけ分かりにくくなる
-  for (const r of roots) out.push(await scanRoot(db, r));
+  //
+  // **受け入れトレイ (kind: 'inbox') は歩かない。** 落としたままの生ファイルが
+  // 平置きされている場所なので、棚に載せると 1 ファイル 1 作品として 3000 件並び、
+  // 本物の蔵書が埋もれる。トレイを読むのは src/inbox.ts (npm run inbox) の仕事。
+  for (const r of roots) {
+    if (r.kind === 'inbox') continue;
+    out.push(await scanRoot(db, r));
+  }
   return out;
 }

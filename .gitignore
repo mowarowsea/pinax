@@ -6,3 +6,6 @@ config.json
 .env
 .env.*
 !.env.example
+# 受け入れトレイの作業データ (外へ聞く一覧と、返ってきた答え)
+ask.tsv
+*_titles_authors.tsv

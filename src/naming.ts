@@ -10,10 +10,10 @@ import { findVolumeIn, stripCompletionMark, type VolumeUnit } from './volume.js'
  *   [{著者}] {作品名}/[{著者}] {作品名} 第{nn}-{nn}巻.{拡張子}
  *   最終巻はどちらにも (完) が付く
  *
- * **ここは読み戻し専用。** 組み立て (リネーム) 側は今は PowerDowner にある。
- * Z: の受け入れトレイを NAS へ整理する段になったら、あちらの planName / fitPath /
- * uniqueName をここへ引き取る — 書く側と読む側が別々の規則を持った瞬間に、
- * 自分で置いたファイルを自分で見つけられなくなる。
+ * **読み戻しと組み立ての両方をここに置く。** 受け入れトレイを棚へ入れる段 (src/inbox.ts) で
+ * PowerDowner から planName / fitPath / uniqueName を引き取った — 書く側と読む側が
+ * 別々の規則を持った瞬間に、自分で置いたファイルを自分で見つけられなくなる。
+ * **PowerDowner 側の同名関数と同一に保つこと。** あちらも同じ形で棚へ書く。
  */
 
 /** 書庫・電子書籍としてありうる拡張子 */
@@ -35,6 +35,11 @@ const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 
 /** 1 つのフォルダ名 / ファイル名の上限。NTFS は 255 だが、パス全体の余裕を残す */
 const SEGMENT_MAX = 110;
+/**
+ * フルパスの上限。Windows の MAX_PATH は 260 だが、分割書庫の連番や
+ * 同名回避の ` (2)` が後から伸びるぶんを引いてある。
+ */
+const PATH_MAX = 240;
 
 /**
  * 巻数の後ろに付く版・品質の印。手元の蔵書にあるもの:
@@ -304,4 +309,115 @@ export function formatVolume(from: number, to: number, unit: VolumeUnit = '巻')
 export function seriesLabel(author: string | null | undefined, title: string): string {
   const a = (author ?? '').trim();
   return a ? `[${a}] ${title}` : title;
+}
+
+// ---- 組み立て (PowerDowner から引き取り) -----------------------------------
+
+export interface NameInput {
+  /** 外から与える値。空なら元のファイル名から読んだものを使う */
+  author?: string | null;
+  title?: string | null;
+  volumeFrom?: number | null;
+  volumeTo?: number | null;
+  unit?: VolumeUnit;
+}
+
+export interface NamePlan {
+  /** 掘る作品フォルダ名。作品名が無ければ null (掘らない) */
+  folder: string | null;
+  /** 同名回避の連番を付ける前のファイル名 */
+  file: string;
+  /** 元の名前のままでよい (巻数か作品名が読めなかった) */
+  keepName: boolean;
+}
+
+/**
+ * ファイル 1 つを、どこへどの名前で置くか決める。
+ *
+ * 足りない値は**元のファイル名から補う**。受け入れトレイのローマ字名のように
+ * 作品名を外から与える場合は input で渡す。
+ *
+ * 巻数がどうしても読めない時はファイル名を変えない。読めないまま `第01巻` と
+ * 決め打ちすると、棚と手元が食い違って後から直しようがなくなる。
+ */
+export function planName(filename: string, input: NameInput = {}, opts: { folder?: boolean } = {}): NamePlan {
+  const parsed = parseFilename(filename);
+  const author = (input.author ?? '').trim() || parsed.author;
+  const rawTitle = (input.title ?? '').trim() || parsed.title;
+  const volFrom = input.volumeFrom ?? parsed.volumeFrom;
+  const volTo = input.volumeTo ?? parsed.volumeTo;
+  const unit = input.unit ?? parsed.unit;
+
+  const title = sanitizeSegment(rawTitle);
+  const safeAuthor = author ? sanitizeSegment(author) : null;
+
+  // 作品名として信用できるのは、外から与えられたか、ファイル名が [著者] か
+  // 巻数で区切られていた場合だけ。区切りの無い名前はダウンロード名がまるごと
+  // 入っているだけなので、それでフォルダを掘ると rsdjf1me5yac のような
+  // フォルダが棚に増えていく
+  const trusted = !!(input.title ?? '').trim() || parsed.author !== null || parsed.volumeFrom !== null;
+
+  // 作品名が無ければ手の出しようがない。掘りも変えもせず、そのまま置く
+  if (!title || !trusted) return { folder: null, file: filename, keepName: true };
+
+  const label = seriesLabel(safeAuthor, title);
+  const folder = opts.folder === false ? null : sanitizeSegment(label);
+
+  // 巻数が読めないものは名前を変えない。作品フォルダには入れる
+  if (volFrom === null || volTo === null) {
+    return { folder, file: filename, keepName: true };
+  }
+
+  const file = `${label} ${formatVolume(volFrom, volTo, unit)}${parsed.part}${parsed.ext}`;
+  return { folder, file, keepName: false };
+}
+
+/**
+ * パスが長すぎるなら作品名を削って収める。
+ *
+ * NAS (UNC) の下に `[著者] 作品名` を 2 回重ねると、日本語の長い作品名で
+ * あっさり MAX_PATH に届く。届いた時に失敗させるのではなく、名前を詰めてでも置く。
+ * それでも収まらなければ作品フォルダを諦める (パスが 1 段浅くなる)。
+ */
+export function fitPath(baseDir: string, plan: NamePlan, input: NameInput = {}): NamePlan {
+  const lengthOf = (p: NamePlan): number => path.join(baseDir, p.folder ?? '', p.file).length;
+  if (lengthOf(plan) <= PATH_MAX) return plan;
+  // 元の名前を保つと決めたものは削らない。長さより「読み戻せること」を採る
+  if (plan.keepName) {
+    return plan.folder !== null && lengthOf({ ...plan, folder: null }) <= PATH_MAX
+      ? { ...plan, folder: null }
+      : plan;
+  }
+
+  const parsed = parseFilename(plan.file);
+  const author = (input.author ?? '').trim() || parsed.author;
+  let title = (input.title ?? '').trim() || parsed.title;
+
+  let next = plan;
+  // 作品名は 6 文字までしか削らない。それ以上は人が読めなくなる
+  while (title.length > 6) {
+    title = title.slice(0, -4).trim();
+    next = planName(plan.file, { ...input, author, title, volumeFrom: parsed.volumeFrom, volumeTo: parsed.volumeTo, unit: parsed.unit },
+      { folder: plan.folder !== null });
+    if (lengthOf(next) <= PATH_MAX) return next;
+  }
+  return next.folder !== null ? { ...next, folder: null } : next;
+}
+
+/**
+ * 同じ名前が既にあるなら末尾に連番を付ける。`... 第01巻 (2).rar`
+ *
+ * 連番は巻数表現の**後ろ**に付ける。`splitFilename` が読み戻す時に落とすので、
+ * 同一性のキーにも巻数にも混ざらない。上書きしないのは、同じ巻でも中身が違う
+ * (画質違い・修正版) ことがあるため。**どちらを捨てるかは人が決める** —
+ * 2 本あることは棚の「要確認 (重複)」に出る。
+ */
+export function uniqueName(dir: string, file: string, exists: (p: string) => boolean): string {
+  if (!exists(path.join(dir, file))) return file;
+  const { stem, part, ext } = splitFilename(file);
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${stem} (${i})${part}${ext}`;
+    if (!exists(path.join(dir, candidate))) return candidate;
+  }
+  return `${stem} (${Date.now()})${part}${ext}`;
 }
