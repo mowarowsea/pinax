@@ -23,7 +23,13 @@ CREATE TABLE IF NOT EXISTS series (
   series_key TEXT NOT NULL,
   title TEXT NOT NULL,
   author TEXT,
+  -- フォルダ名の (完) から読んだ完結。**スキャンが書く列で、人は触らない**
   completed INTEGER NOT NULL DEFAULT 0,
+  -- 人が画面で決めた完結。null = 未指定 (フォルダに従う) / 1 = 完結 / 0 = 継続中。
+  -- **フォルダ由来と別の列にする。** 同じ列に上書きすると次のスキャンで踏み潰され、
+  -- 逆に人の指定でフォルダ側を書き換えると「ファイルが正」という土台が崩れる
+  completed_user INTEGER,
+
   present INTEGER NOT NULL DEFAULT 1,
   first_seen_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
@@ -149,6 +155,14 @@ CREATE TABLE IF NOT EXISTS scans (
 
 export type EventKind = 'series_added' | 'volume_added' | 'volume_gone' | 'series_completed';
 
+/**
+ * 完結と言っているのは誰か。
+ *
+ * **外の書誌は入らない。** 完結が外から分からないことは実測済み (published.ts の頭)。
+ * ここに載るのは人が下した判断だけで、`user` (画面で指定) が `folder` (フォルダの `(完)`) に勝つ。
+ */
+export type CompletedSource = 'folder' | 'user' | null;
+
 export interface SeriesRow {
   id: number;
   rootId: string;
@@ -156,7 +170,14 @@ export interface SeriesRow {
   seriesKey: string;
   title: string;
   author: string | null;
+  /** 実効値。人の指定があればそちら、無ければフォルダの `(完)` */
   completed: boolean;
+  /** フォルダ名の `(完)`。スキャンが書く */
+  folderCompleted: boolean;
+  /** 人が画面で決めた値。null なら未指定 (フォルダに従う) */
+  completedUser: boolean | null;
+  /** 完結の根拠。画面で「誰がそう言ったか」を出すために持つ */
+  completedBy: CompletedSource;
   present: boolean;
   firstSeenAt: string;
   lastSeenAt: string;
@@ -220,6 +241,10 @@ export class Db {
     if (!cols('bib').has('cover_tried_at')) {
       this.raw.exec('ALTER TABLE bib ADD COLUMN cover_tried_at TEXT');
     }
+    // 人が画面で決めた完結。フォルダ由来の completed とは別列 (SCHEMA 側の註を参照)
+    if (!cols('series').has('completed_user')) {
+      this.raw.exec('ALTER TABLE series ADD COLUMN completed_user INTEGER');
+    }
     // 列を足した後に張る。SCHEMA 側に置くと、既にある DB では列より先に走って失敗する
     this.raw.exec('CREATE INDEX IF NOT EXISTS series_enriched_idx ON series(enriched_at)');
     this.raw.exec('CREATE INDEX IF NOT EXISTS bib_cover_tried_idx ON bib(cover_tried_at)');
@@ -261,19 +286,36 @@ export class Db {
       return { row, created: true, newlyCompleted: input.completed };
     }
     // 完結は一度立ったら倒さない。印を外して置き直すことはあっても、
-    // 「完結でなくなる」ことは無いので、消えたように見えたら読み落としを疑う方が正しい
-    const completed = before.completed || input.completed;
+    // 「完結でなくなる」ことは無いので、消えたように見えたら読み落としを疑う方が正しい。
+    // **触るのはフォルダ由来の列だけ。** 人の指定 (completed_user) はスキャンでは動かさない
+    const folderCompleted = before.folderCompleted || input.completed;
     this.raw
       .prepare(
         `UPDATE series SET series_key = ?, title = ?, author = ?, completed = ?, present = 1,
                            last_seen_at = ?, updated_at = ? WHERE id = ?`
       )
-      .run(input.seriesKey, input.title, input.author, completed ? 1 : 0, t, t, before.id);
+      .run(input.seriesKey, input.title, input.author, folderCompleted ? 1 : 0, t, t, before.id);
+    const row = this.getSeries(before.id)!;
     return {
-      row: this.getSeries(before.id)!,
+      row,
       created: false,
-      newlyCompleted: !before.completed && completed,
+      // お知らせは**実効値**で出す。人が「継続中」と指定した作品のフォルダに
+      // 後から (完) が付いても、人の指定が勝っている間は完結を告げない
+      newlyCompleted: !before.completed && row.completed,
     };
+  }
+
+  /**
+   * 完結を人の手で決める。`null` で指定を外し、フォルダの `(完)` に従う状態へ戻す。
+   *
+   * **フォルダ側 (`completed`) は書き換えない。** 書き換えると次のスキャンが
+   * ファイルを見て上書きし直すので、指定が黙って消える。
+   */
+  setCompletedOverride(seriesId: number, value: boolean | null): SeriesRow | null {
+    this.raw
+      .prepare('UPDATE series SET completed_user = ?, updated_at = ? WHERE id = ?')
+      .run(value === null ? null : value ? 1 : 0, now(), seriesId);
+    return this.getSeries(seriesId);
   }
 
   findSeriesByFolder(rootId: string, folder: string): SeriesRow | null {
@@ -472,11 +514,34 @@ function toSeries(r: Record<string, unknown>): SeriesRow {
     seriesKey: String(r.series_key),
     title: String(r.title),
     author: (r.author as string | null) ?? null,
-    completed: Number(r.completed) === 1,
+    ...completedOf(r),
     present: Number(r.present) === 1,
     firstSeenAt: String(r.first_seen_at),
     lastSeenAt: String(r.last_seen_at),
     enrichedAt: (r.enriched_at as string | null) ?? null,
+  };
+}
+
+/**
+ * フォルダ由来と人の指定を 1 つの答えにまとめる。
+ *
+ * **人の指定が勝つ。** フォルダに `(完)` を付け忘れている作品も、逆に `(完)` が
+ * 付いているのに新装版が出てしまった作品も実在するので、後から人が言い直せる方を上に置く。
+ * ただし**上書きはしない** — `completed_user` を null に戻せばフォルダの答えへ帰る。
+ */
+export function completedOf(r: Record<string, unknown>): {
+  completed: boolean; folderCompleted: boolean; completedUser: boolean | null; completedBy: CompletedSource;
+} {
+  const folderCompleted = Number(r.completed) === 1;
+  const completedUser = r.completed_user === null || r.completed_user === undefined
+    ? null
+    : Number(r.completed_user) === 1;
+  const completed = completedUser ?? folderCompleted;
+  return {
+    completed,
+    folderCompleted,
+    completedUser,
+    completedBy: !completed ? null : completedUser !== null ? 'user' : 'folder',
   };
 }
 

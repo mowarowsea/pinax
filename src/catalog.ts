@@ -1,4 +1,4 @@
-import type { Db, SeriesRow, VolumeRow } from './db.js';
+import { completedOf, type Db, type SeriesRow, type VolumeRow } from './db.js';
 import { parseFilename, seriesLabel } from './naming.js';
 import { parseItem, seriesKeyOf } from './volume.js';
 import { publishedOf, shelfStateOf, type PublishedInfo, type ShelfState } from './published.js';
@@ -9,6 +9,29 @@ import { publishedOf, shelfStateOf, type PublishedInfo, type ShelfState } from '
  * 欠番は**単位ごとに別々に数える**。巻で出ているものと話で出ているものを同じ数直線に
  * 乗せると、第224話を持っている作品が「224巻まであるのに 40 巻しか無い」に化ける。
  */
+
+/**
+ * 棚の整合性。**機械が直さず、人に見せる。**
+ *
+ * ファイル名から巻を読む以上、読み違えも読めないものも必ず残る。実物にもある:
+ *
+ *   `本好きの下剋上 第04部 第01巻` … 部が違うのに全部「第01巻」に畳まれる (重複)
+ *   `Landreaall 第01巻.rar` と `Landreaall ランドリオール 第01巻.zip` … 同じ巻が 2 本 (重複)
+ *   巻数表現の無いファイル … 何巻か読めない (欠番の計算に参加しない)
+ *
+ * どれも**機械には正解が分からない**。別版として両方残したいのか、片方が捨て漏れなのかは
+ * 中身を見た人しか決められないので、pinax は数えて並べるところまでをやる。
+ */
+export interface SeriesIssues {
+  /** 同じ巻に別々のファイルが割り当たっている巻の数。分割書庫の続きは 1 つと数える */
+  duplicateVolumes: number;
+  /** そのうち、1 巻 1 本を超えている分のファイル数 */
+  duplicateFiles: number;
+  /** 何巻か読めなかったファイルの数 */
+  unreadableFiles: number;
+  /** どれか 1 つでもあるか */
+  any: boolean;
+}
 
 export interface Holding {
   unit: string;
@@ -27,7 +50,12 @@ export interface SeriesSummary {
   title: string;
   author: string | null;
   label: string;
+  /** 実効値。人の指定があればそちら、無ければフォルダの `(完)` */
   completed: boolean;
+  /** フォルダ名の `(完)` */
+  folderCompleted: boolean;
+  /** 人が画面で決めた値。null なら未指定 */
+  completedUser: boolean | null;
   present: boolean;
   fileCount: number;
   bytes: number;
@@ -42,9 +70,62 @@ export interface SeriesSummary {
    * **「11 巻以降が出ている」** を見る。買い逃しに効くのは後者
    */
   shelf: ShelfState;
+  /** 巻の重複・巻数不明。**絞り込みの対象** */
+  issues: SeriesIssues;
   coverUrl: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
+}
+
+/**
+ * 分割書庫の連番を落としたファイルの素。`foo.part1.rar` も `foo.r00` も `foo` になる。
+ *
+ * **同じ巻に素が 2 つ以上あれば重複**で、分割書庫の続き (`.part2` / `.r01`) は重複ではない。
+ * SQL 側 (`fileBaseSql`) と同じ切り方をすること — 片方だけ直すと、一覧では重複と出るのに
+ * 開くとどこにも印が付いていない、という食い違いになる。
+ */
+function fileBaseOf(r: Record<string, unknown>): string {
+  const rel = String(r.rel_path ?? '');
+  const cut = String(r.part ?? '').length + String(r.ext ?? '').length;
+  return cut > 0 ? rel.slice(0, Math.max(0, rel.length - cut)) : rel;
+}
+
+const fileBaseSql =
+  "substr(f.rel_path, 1, length(f.rel_path) - length(COALESCE(f.part, '')) - length(COALESCE(f.ext, '')))";
+
+/** 同じ巻に 2 本以上のファイルがぶら下がっている巻を数える */
+const dupVolumesSql = (seriesRef: string): string => `(SELECT COUNT(*) FROM (
+    SELECT 1 FROM volumes v JOIN files f ON f.volume_id = v.id AND f.present = 1
+     WHERE v.series_id = ${seriesRef} AND v.present = 1
+     GROUP BY v.id HAVING COUNT(DISTINCT ${fileBaseSql}) > 1))`;
+
+/** 上の巻のうち、1 巻 1 本を超えている分のファイル数 */
+const dupFilesSql = (seriesRef: string): string => `(SELECT COALESCE(SUM(n - 1), 0) FROM (
+    SELECT COUNT(DISTINCT ${fileBaseSql}) AS n
+      FROM volumes v JOIN files f ON f.volume_id = v.id AND f.present = 1
+     WHERE v.series_id = ${seriesRef} AND v.present = 1
+     GROUP BY v.id HAVING n > 1))`;
+
+const looseFilesSql = (seriesRef: string): string =>
+  `(SELECT COUNT(*) FROM files f WHERE f.series_id = ${seriesRef} AND f.present = 1 AND f.volume_id IS NULL)`;
+
+function toIssues(duplicateVolumes: number, duplicateFiles: number, unreadableFiles: number): SeriesIssues {
+  return {
+    duplicateVolumes,
+    duplicateFiles,
+    unreadableFiles,
+    any: duplicateVolumes > 0 || unreadableFiles > 0,
+  };
+}
+
+/** 作品 1 つぶんの整合性を数える (詳細画面と listSeriesOne 用) */
+export function issuesOf(db: Db, seriesId: number): SeriesIssues {
+  const r = db.raw
+    .prepare(
+      `SELECT ${dupVolumesSql('?')} AS dup_volumes, ${dupFilesSql('?')} AS dup_files, ${looseFilesSql('?')} AS loose`
+    )
+    .get(seriesId, seriesId, seriesId) as Record<string, unknown>;
+  return toIssues(Number(r.dup_volumes ?? 0), Number(r.dup_files ?? 0), Number(r.loose ?? 0));
 }
 
 /** 持っている巻から穴を割り出す */
@@ -81,6 +162,14 @@ export interface ListOptions {
   rootId?: string;
   /** 表紙がまだ無いものだけ */
   needsCover?: boolean;
+  /**
+   * 棚の整合性で絞る。**総数 (`total`) にも効く** ので、
+   * 「要確認 12 件」と出たらその 12 件が全部そこに並ぶ
+   *   dup   … 同じ巻に複数のファイルがある
+   *   loose … 何巻か読めないファイルがある
+   *   any   … どちらか
+   */
+  issues?: 'any' | 'dup' | 'loose';
   sort?: 'title' | 'author' | 'added' | 'volumes';
   limit?: number;
   offset?: number;
@@ -102,7 +191,9 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
     params.push(opts.rootId);
   }
   if (opts.completed !== undefined) {
-    where.push('s.completed = ?');
+    // 人の指定が勝つ (db.ts の completedOf と同じ順)。生の s.completed で絞ると、
+    // 画面で「完結」にした作品が「完結」の絞り込みから漏れる
+    where.push('COALESCE(s.completed_user, s.completed) = ?');
     params.push(opts.completed ? 1 : 0);
   }
   if (opts.q) {
@@ -113,6 +204,12 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
   }
   if (opts.needsCover) {
     where.push('NOT EXISTS (SELECT 1 FROM covers c WHERE c.series_id = s.id AND c.volume_no IS NULL)');
+  }
+  if (opts.issues) {
+    // **SQL 側で絞る。** gapsOnly のように後から篩うと total とページの中身が食い違う
+    const dup = `${dupVolumesSql('s.id')} > 0`;
+    const loose = `${looseFilesSql('s.id')} > 0`;
+    where.push(opts.issues === 'dup' ? dup : opts.issues === 'loose' ? loose : `(${dup} OR ${loose})`);
   }
 
   const clause = `WHERE ${where.join(' AND ')}`;
@@ -135,7 +232,9 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
       `SELECT s.*,
               (SELECT COUNT(*) FROM files f WHERE f.series_id = s.id AND f.present = 1) AS file_count,
               (SELECT COALESCE(SUM(f.size), 0) FROM files f WHERE f.series_id = s.id AND f.present = 1) AS bytes,
-              (SELECT COUNT(*) FROM files f WHERE f.series_id = s.id AND f.present = 1 AND f.volume_id IS NULL) AS loose,
+              ${looseFilesSql('s.id')} AS loose,
+              ${dupVolumesSql('s.id')} AS dup_volumes,
+              ${dupFilesSql('s.id')} AS dup_files,
               (SELECT c.id FROM covers c WHERE c.series_id = s.id AND c.volume_no IS NULL) AS cover_id
          FROM series s ${clause}
         ORDER BY ${order} LIMIT ? OFFSET ?`
@@ -145,7 +244,8 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
   const items = rows.map((r) => {
     const volumes = db.listVolumes(Number(r.id));
     const holdings = holdingsOf(volumes);
-    const completed = Number(r.completed) === 1;
+    // 行に series.* が全部入っているので、完結はここで解く (getSeries を引き直さない)
+    const done = completedOf(r);
     const pub = publishedOf(db, Number(r.id), holdings, (r.enriched_at as string | null) ?? null);
     return {
       id: Number(r.id),
@@ -155,14 +255,17 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
       title: String(r.title),
       author: (r.author as string | null) ?? null,
       label: seriesLabel(r.author as string | null, String(r.title)),
-      completed,
+      completed: done.completed,
+      folderCompleted: done.folderCompleted,
+      completedUser: done.completedUser,
       present: Number(r.present) === 1,
       fileCount: Number(r.file_count),
       bytes: Number(r.bytes),
       looseFiles: Number(r.loose),
       holdings,
       hasGap: holdings.some((h) => h.missing.length > 0),
-      shelf: shelfStateOf(pub, completed, holdings),
+      shelf: shelfStateOf(pub, done.completedBy, holdings),
+      issues: toIssues(Number(r.dup_volumes ?? 0), Number(r.dup_files ?? 0), Number(r.loose ?? 0)),
       coverUrl: r.cover_id ? `/api/covers/${Number(r.cover_id)}` : null,
       firstSeenAt: String(r.first_seen_at),
       lastSeenAt: String(r.last_seen_at),
@@ -185,6 +288,11 @@ export interface VolumeDetail {
   completed: boolean;
   present: boolean;
   coverUrl: string | null;
+  /**
+   * この巻に別々のファイルが 2 本以上ぶら下がっている。分割書庫の続きは数えない。
+   * **どちらが正しいかは言わない** — 別版として両方置いているのか捨て漏れなのかは人が決める
+   */
+  duplicate: boolean;
   files: {
     id: number;
     relPath: string;
@@ -238,6 +346,7 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
 
   const details: VolumeDetail[] = volumes.map((v) => {
     const coverId = v.volumeFrom === v.volumeTo ? coverByVol.get(v.volumeFrom) : undefined;
+    const mine = fileRows.filter((r) => Number(r.volume_id) === v.id && Number(r.present) === 1);
     return {
       id: v.id,
       volumeFrom: v.volumeFrom,
@@ -249,6 +358,7 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
       completed: v.completed,
       present: v.present,
       coverUrl: coverId ? `/api/covers/${coverId}` : null,
+      duplicate: new Set(mine.map(fileBaseOf)).size > 1,
       files: fileRows.filter((r) => Number(r.volume_id) === v.id).map(toFile),
     };
   });
@@ -288,13 +398,16 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
     author: s.author,
     label: seriesLabel(s.author, s.title),
     completed: s.completed,
+    folderCompleted: s.folderCompleted,
+    completedUser: s.completedUser,
     present: s.present,
     fileCount: Number(agg.file_count ?? 0),
     bytes: Number(agg.bytes ?? 0),
     looseFiles: Number(agg.loose ?? 0),
     holdings,
     hasGap: holdings.some((h) => h.missing.length > 0),
-    shelf: shelfStateOf(pub, s.completed, holdings),
+    shelf: shelfStateOf(pub, s.completedBy, holdings),
+    issues: issuesOf(db, s.id),
     coverUrl: cover ? `/api/covers/${cover.id}` : null,
     firstSeenAt: s.firstSeenAt,
     lastSeenAt: s.lastSeenAt,

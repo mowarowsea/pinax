@@ -1,4 +1,4 @@
-import type { Db } from './db.js';
+import type { CompletedSource, Db } from './db.js';
 import type { Holding } from './catalog.js';
 
 /**
@@ -52,7 +52,8 @@ export function yearOf(pubdate: string | null | undefined): number | null {
  *
  * **なので推測しない。** 代わりに、嘘をつかずに言えることだけを返す:
  *
- *   `owner`  … フォルダに `(完)` が付いている。**人が下した判断なので、これだけは確か**
+ *   `owner`  … フォルダに `(完)` が付いている、または画面で人が完結だと言った。
+ *              **どちらも人が下した判断なので、これだけは確か**
  *   `ahead`  … 手元の最大巻より先が出ている。「続きがある」は事実として言える
  *   `caughtUp` … 外が知っている巻は全部持っている。完結したのか、単に外が
  *                最新を知らないだけなのかは**区別できない**
@@ -64,6 +65,8 @@ export type ShelfStatus = 'owner-completed' | 'behind' | 'caught-up' | 'unknown'
 
 export interface ShelfState {
   status: ShelfStatus;
+  /** 完結と言っているのは誰か。`owner-completed` の時だけ入る */
+  completedBy: CompletedSource;
   /** 外の書誌が知っている一番大きい巻。**下限** */
   publishedMax: number | null;
   /** 手元に持っている一番大きい巻 */
@@ -120,7 +123,7 @@ export function publishedOf(db: Db, seriesId: number, holdings: Holding[], enric
 /** 画面と API にそのまま出せる形にまとめる。**断定しない言い方を守る** */
 export function shelfStateOf(
   pub: PublishedInfo,
-  ownerCompleted: boolean,
+  completedBy: CompletedSource,
   holdings: Holding[]
 ): ShelfState {
   const latestYear = yearOf(pub.latestDate);
@@ -128,6 +131,7 @@ export function shelfStateOf(
   const ownedMax = byVolume?.max ?? 0;
 
   const base = {
+    completedBy,
     publishedMax: pub.max,
     ownedMax,
     missingCount: pub.missing.length,
@@ -135,8 +139,8 @@ export function shelfStateOf(
     latestYear,
   };
 
-  // フォルダの `(完)` は人が下した判断。外の書誌より強い
-  if (ownerCompleted) {
+  // 完結の印は人が下した判断。外の書誌より強い
+  if (completedBy) {
     return {
       ...base,
       status: 'owner-completed',

@@ -10,6 +10,7 @@ import { enrichSeries, fillMissingCovers, fillVolumeCovers } from './bib/enrich.
 import { searchNdl } from './bib/ndl.js';
 import { cachedFetch } from './bib/cache.js';
 import { scanAll, scanRoot } from './scan/scanner.js';
+import { openInExplorer, resolveInsideRoot, revealAbility } from './reveal.js';
 
 export class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -48,7 +49,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
 
   // ---- 死活監視 (LocalLauncher がここを見る) ------------------------------
 
-  app.get('/api/health', async () => {
+  app.get('/api/health', async (req) => {
     const counts = db.raw
       .prepare(
         `SELECT (SELECT COUNT(*) FROM series WHERE present = 1) AS series,
@@ -62,6 +63,9 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
       ok: true,
       name: 'pinax',
       roots: cfg.roots.map((r) => ({ id: r.id, label: r.label, kind: r.kind, path: r.path })),
+      // エクスプローラを開けるかどうかは**相手ごとに違う** (reveal.ts の頭)。
+      // 画面はこれを見てボタンを出すか決める
+      reveal: revealAbility(req.ip),
       counts,
       lastScans: db.lastScans(cfg.roots.length || 1),
       cache: db.cacheStats(),
@@ -73,7 +77,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   app.get<{
     Querystring: {
       q?: string; gaps?: string; completed?: string; root?: string; needsCover?: string;
-      behind?: string; missing?: string;
+      behind?: string; missing?: string; issues?: string;
       sort?: string; limit?: string; offset?: string;
     };
   }>('/api/series', async (req) => {
@@ -89,6 +93,12 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
       // 「続きが出ている」= 手元の最大巻より先が出ている。買い逃しに効くのはこちら
       behindOnly: bool(qs.behind) ?? false,
       missingOnly: bool(qs.missing) ?? false,
+      // 棚の整合性 (巻の重複 / 巻数不明)。`1` は「どちらか」
+      issues: qs.issues === 'dup' || qs.issues === 'loose'
+        ? qs.issues
+        : qs.issues === '1' || qs.issues === 'any' || qs.issues === 'true'
+          ? 'any'
+          : undefined,
       sort: (qs.sort as 'title' | 'author' | 'added' | 'volumes' | undefined) ?? 'title',
       limit: qs.limit ? Number(qs.limit) : undefined,
       offset: qs.offset ? Number(qs.offset) : undefined,
@@ -99,6 +109,66 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     const detail = getSeriesDetail(db, Number(req.params.id));
     if (!detail) throw new HttpError(404, 'その作品はありません');
     return detail;
+  });
+
+  /**
+   * 完結を人の手で決める。`completed: null` で指定を外し、フォルダの `(完)` に従う状態へ戻す。
+   *
+   * **フォルダ側は書き換えない。** 外の書誌から完結が分からないことは実測済み
+   * (published.ts の頭) なので、ここは「人がそう言った」を記録する場所であって、
+   * ファイル名を正とする土台を動かす場所ではない。
+   */
+  app.post<{ Params: { id: string }; Body: { completed?: boolean | null } }>(
+    '/api/series/:id/completed',
+    async (req) => {
+      const id = Number(req.params.id);
+      if (!db.getSeries(id)) throw new HttpError(404, 'その作品はありません');
+      const v = req.body?.completed;
+      if (v !== true && v !== false && v !== null && v !== undefined) {
+        throw new HttpError(400, 'completed は true / false / null のどれかです');
+      }
+      const row = db.setCompletedOverride(id, v ?? null)!;
+      return {
+        ok: true,
+        completed: row.completed,
+        completedUser: row.completedUser,
+        folderCompleted: row.folderCompleted,
+        completedBy: row.completedBy,
+      };
+    }
+  );
+
+  /**
+   * 作品のフォルダをエクスプローラで開く。**PC 限定** (reveal.ts の頭)。
+   * `fileId` を添えるとそのファイルを選択した状態で開くので、
+   * 重複や巻数不明のファイルをそのまま手で片付けられる。
+   */
+  app.post<{ Params: { id: string }; Body: { fileId?: number } }>('/api/series/:id/reveal', async (req) => {
+    const can = revealAbility(req.ip);
+    if (!can.available) throw new HttpError(403, can.reason ?? 'この操作はできません');
+
+    const id = Number(req.params.id);
+    const series = db.getSeries(id);
+    if (!series) throw new HttpError(404, 'その作品はありません');
+    const root = rootById(series.rootId);
+
+    const fileId = Number(req.body?.fileId ?? 0);
+    if (fileId) {
+      const f = db.raw
+        .prepare('SELECT rel_path, series_id FROM files WHERE id = ?')
+        .get(fileId) as { rel_path: string; series_id: number } | undefined;
+      // 別の作品のファイル id を渡して棚の外を開かせない
+      if (!f || Number(f.series_id) !== id) throw new HttpError(404, 'そのファイルはこの作品にありません');
+      const abs = resolveInsideRoot(root.path, String(f.rel_path));
+      if (!fs.existsSync(abs)) throw new HttpError(404, `実ファイルが見当たりません: ${f.rel_path}`);
+      await openInExplorer(abs, { select: true });
+      return { ok: true, opened: abs, selected: true };
+    }
+
+    const abs = resolveInsideRoot(root.path, series.folder);
+    if (!fs.existsSync(abs)) throw new HttpError(404, `フォルダが見当たりません: ${series.folder}`);
+    await openInExplorer(abs);
+    return { ok: true, opened: abs, selected: false };
   });
 
   /**

@@ -119,17 +119,39 @@ main { padding: 16px 20px 60px; }
 .c-title { font-size: 12.5px; font-weight: 600; line-height: 1.35; }
 .c-meta { font-size: 11px; color: var(--ink-3); }
 
-/* ---- 詳細 ---- */
+/* ---- 詳細 ----
+   スマホでは下から生える板にする。**上に地の画面を覗かせたまま止める** —
+   全画面に被せると、今開いているのが別の画面なのか作品の中なのか分からなくなる。
+   中身は .sheet-body だけが動き、× を載せた頭は常に居座る (スクロールで逃げない) */
 .sheet {
-  position: fixed; inset: 0; z-index: 50; background: rgba(25,15,12,.45);
-  display: flex; justify-content: center; align-items: flex-start; padding: 3vh 16px; overflow: auto;
+  position: fixed; inset: 0; z-index: 50; background: rgba(25,15,12,.5);
+  display: flex; justify-content: center; align-items: flex-start; padding: 3vh 16px;
+  overscroll-behavior: contain;
 }
 .sheet[hidden] { display: none; }
 .sheet-inner {
   background: var(--panel); border-radius: 14px; box-shadow: var(--shadow);
-  width: min(920px, 100%); padding: 22px; position: relative;
+  width: min(920px, 100%); max-height: 94vh;
+  display: flex; flex-direction: column; overflow: hidden;
 }
-.close { position: absolute; top: 12px; right: 12px; border: 0; background: transparent; font-size: 22px; color: var(--ink-3); line-height: 1; padding: 4px 8px; }
+.sheet-head {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 11px 12px 11px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.sheet-head .grip { display: none; }
+.sheet-title {
+  flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--ink-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.close {
+  flex: none; border: 1px solid var(--line); background: var(--panel); border-radius: 8px;
+  font-size: 19px; line-height: 1; color: var(--ink-2); padding: 6px 14px;
+}
+.close:hover { border-color: var(--brand); color: var(--brand); }
+.sheet-body {
+  overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  padding: 20px;
+}
 .d-head { display: flex; gap: 20px; flex-wrap: wrap; }
 .d-cover { width: 150px; flex: none; aspect-ratio: 2/3; border-radius: 8px; overflow: hidden; background: var(--brand-soft); box-shadow: var(--shadow); }
 .d-cover img { width: 100%; height: 100%; object-fit: cover; }
@@ -162,6 +184,34 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .loose { font-size: 12px; color: var(--ink-2); display: grid; gap: 4px; }
 .loose a { text-decoration: none; }
 
+/* ---- 完結の指定 ---- */
+.setrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.setrow .lab { font-size: 12px; color: var(--ink-3); }
+.setrow .hint { font-size: 11.5px; color: var(--ink-3); flex: 1 1 100%; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-left: 1px solid var(--line); background: transparent; color: var(--ink-2); padding: 7px 14px; font-size: 12.5px; }
+.seg button:first-child { border-left: 0; }
+.seg button[aria-pressed="true"] { background: var(--brand); color: #fff; }
+.seg button[disabled] { opacity: .5; cursor: default; }
+
+/* ---- 要確認 (巻の重複・巻数不明) ---- */
+.issueline { margin: 10px 0 0; padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  background: var(--brand-soft); color: var(--gap); }
+.issueline small { display: block; font-weight: 400; font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+.badge.warn { background: var(--gap); }
+.vol.dup .cover { outline: 2px solid var(--gap); outline-offset: -2px; }
+.filelist { display: grid; gap: 8px; font-size: 12px; }
+.filelist .grp { display: grid; gap: 3px; }
+.filelist .grp > b { font-size: 12px; color: var(--gap); font-weight: 600; }
+.filelist .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; color: var(--ink-2); }
+.filelist .row .nm { word-break: break-all; flex: 1 1 240px; }
+.filelist .row .sz { color: var(--ink-3); font-size: 11px; }
+.filelist a { text-decoration: none; }
+.mini { border: 1px solid var(--line); background: transparent; color: var(--ink-3); border-radius: 6px;
+  padding: 2px 8px; font-size: 11px; white-space: nowrap; }
+.mini:hover { border-color: var(--brand); color: var(--brand); }
+.more { font-size: 11.5px; color: var(--ink-3); }
+
 .empty { text-align: center; color: var(--ink-3); padding: 60px 20px; }
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 80;
@@ -170,6 +220,30 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .toast[hidden] { display: none; }
 .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- スマホ ----
+   詳細は下から生える板。上を 12dvh ほど空けて地の画面を残す (何かの上に乗っていると分かる)。
+   dvh はアドレスバーの伸縮に追従する — vh だけだと板の底がバーの裏に隠れて × に指が届かない */
+@media (max-width: 640px) {
+  .sheet { padding: 0; align-items: flex-end; }
+  .sheet-inner {
+    width: 100%; max-height: 88vh; max-height: 88dvh;
+    border-radius: 16px 16px 0 0; box-shadow: 0 -8px 30px rgba(25,15,12,.28);
+  }
+  .sheet-head { flex-wrap: wrap; padding: 7px 10px 10px 16px; }
+  .sheet-head .grip {
+    display: block; flex: 1 0 100%; height: 4px; width: 40px; margin: 0 auto 7px;
+    border-radius: 99px; background: var(--line);
+  }
+  .sheet-body { padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); }
+  .d-cover { width: 108px; }
+  .d-info h2 { font-size: 17px; }
+  .bar { padding: 10px 14px; gap: 10px; }
+  .tools { padding: 0 14px 10px; }
+  main { padding: 14px 14px 48px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 14px 10px; }
+  .news { margin: 12px 14px 0; }
+}
 </style>
 </head>
 <body>
@@ -192,6 +266,7 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
       <button class="chip" id="f-done" aria-pressed="false">完結</button>
       <button class="chip" id="f-ongoing" aria-pressed="false">継続中</button>
       <button class="chip" id="f-nocover" aria-pressed="false">表紙なし</button>
+      <button class="chip" id="f-issues" aria-pressed="false">要確認</button>
     </div>
     <select class="sort" id="sort">
       <option value="title">作品名順</option>
@@ -211,9 +286,13 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 </main>
 
 <div class="sheet" id="sheet" hidden>
-  <div class="sheet-inner">
-    <button class="close" id="sheet-close" aria-label="閉じる">&times;</button>
-    <div id="detail"></div>
+  <div class="sheet-inner" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="sheet-head">
+      <span class="grip" aria-hidden="true"></span>
+      <span class="sheet-title" id="sheet-title"></span>
+      <button class="close" id="sheet-close" aria-label="閉じる">&times;</button>
+    </div>
+    <div class="sheet-body" id="detail"></div>
   </div>
 </div>
 
@@ -240,7 +319,14 @@ async function api(path, opts) {
   return body;
 }
 
-const state = { q: '', gaps: false, behind: false, completed: undefined, needsCover: false, sort: 'title' };
+const state = { q: '', gaps: false, behind: false, completed: undefined, needsCover: false, issues: false, sort: 'title' };
+
+/**
+ * この端末で pinax が何をできるか。/api/health が**接続元ごとに**答える。
+ * エクスプローラは pinax が動いている PC からしか開けないので、
+ * スマホで見ている時はボタンそのものを出さない (押せるのに何も起きないのが一番困る)。
+ */
+const caps = { reveal: { available: false, reason: null } };
 
 // ---- 棚 ----------------------------------------------------------------
 
@@ -256,6 +342,7 @@ function cardHtml(s) {
   if (s.hasGap) badges.push(`<span class="badge gap">欠番 ${s.holdings.reduce((n, x) => n + x.missing.length, 0)}</span>`);
   // 手元の最大巻より先が出ている。**欠番とは意味が違う** ので別に出す
   if (s.shelf && s.shelf.aheadCount) badges.push(`<span class="badge ahead">+${s.shelf.aheadCount}</span>`);
+  if (s.issues && s.issues.any) badges.push('<span class="badge warn">要確認</span>');
   if (s.completed) badges.push('<span class="badge done">完</span>');
   const range = h ? `1〜${h.max}${h.unit}` : (s.looseFiles ? `${s.looseFiles}点` : '');
   return `<button class="card" data-id="${s.id}">
@@ -273,6 +360,7 @@ async function loadGrid() {
   if (state.behind) p.set('behind', '1');
   if (state.completed !== undefined) p.set('completed', state.completed ? '1' : '0');
   if (state.needsCover) p.set('needsCover', '1');
+  if (state.issues) p.set('issues', '1');
 
   const { total, items } = await api('/api/series?' + p);
   $('grid').innerHTML = items.map(cardHtml).join('');
@@ -282,7 +370,9 @@ async function loadGrid() {
     ? `続きが出ている作品 ${shown} 件`
     : state.gaps
       ? `欠番のある作品 ${shown} 件`
-      : `${shown} 件を表示${total > shown ? ` (該当 ${total} 件)` : ''}`;
+      : state.issues
+        ? `要確認の作品 ${shown} 件 — 同じ巻に複数のファイル、または何巻か読めないファイルがあります`
+        : `${shown} 件を表示${total > shown ? ` (該当 ${total} 件)` : ''}`;
 }
 
 // ---- 詳細 ---------------------------------------------------------------
@@ -294,9 +384,12 @@ function volHtml(v) {
   const dl = v.files.length === 1
     ? `<a class="dl" href="/api/files/${f.id}/download">保存</a>`
     : `<a class="dl" href="/api/files/${f.id}/download">保存 (1/${v.files.length})</a>`;
-  return `<div class="vol">
+  const marks = [];
+  if (v.duplicate) marks.push('<span class="badge warn">複</span>');
+  if (v.completed) marks.push('<span class="badge done">完</span>');
+  return `<div class="vol${v.duplicate ? ' dup' : ''}">
     <span class="cover">${coverHtml(v.coverUrl, v.label)}
-      ${v.completed ? '<span class="badges"><span class="badge done">完</span></span>' : ''}</span>
+      ${marks.length ? `<span class="badges">${marks.join('')}</span>` : ''}</span>
     <span class="lbl">${esc(v.label)}${tags.length ? ' ' + esc(tags.join(',')) : ''}</span>
     <span class="sz">${mb(size)}</span>
     ${dl}
@@ -330,7 +423,10 @@ function shelfLineHtml(d) {
       <small>${esc(src)} で確認できた範囲です。これより先が出ている可能性もあります</small></div>`;
   }
   if (sh.status === 'owner-completed') {
-    return `<div class="shelfline quiet">完結（フォルダの (完) による）${
+    // 完結と言っているのが誰かを必ず添える。フォルダの印なのか自分で指定したのかで、
+    // 「本当に完結か」を疑う時の当たり先が変わる
+    const by = sh.completedBy === 'user' ? 'この画面で指定' : 'フォルダの (完)';
+    return `<div class="shelfline quiet">完結（${by}）${
       sh.missingCount ? ` — 未所持 ${sh.missingCount}巻` : ' — 揃っています'
     }<small>${esc(src)} で第${sh.publishedMax ?? '?'}巻まで確認</small></div>`;
   }
@@ -388,24 +484,108 @@ function detailHtml(d) {
       </dl>
       ${gapText ? `<div class="gapline">欠番 ${esc(gapText)}</div>` : ''}
       ${shelfLineHtml(d)}
+      ${issueLineHtml(d)}
+      ${completedSegHtml(d)}
       <div class="d-actions">
         <button class="btn" id="enrich" data-id="${d.id}">書誌と表紙を取り直す</button>
+        ${caps.reveal.available ? '<button class="btn" id="reveal">エクスプローラで開く</button>' : ''}
       </div>
     </div>
   </div>
   <h3 class="sec">巻</h3>
   <div class="vols">${line.join('')}</div>
+  ${dupSectionHtml(d)}
   ${d.loose.length ? `<h3 class="sec">巻数を読めなかったファイル</h3>
-    <div class="loose">${d.loose.map((f) => `<a href="/api/files/${f.id}/download">${esc(f.relPath)}</a> <span class="sz">${mb(f.size)}</span>`).join('')}</div>` : ''}
+    <div class="filelist">${d.loose.map((f) => fileRowHtml(f)).join('')}</div>` : ''}
   `;
 }
 
-async function openDetail(id) {
-  $('detail').innerHTML = '<div class="empty"><span class="spin"></span> 読み込み中</div>';
-  $('sheet').hidden = false;
+/**
+ * 要確認の一行。**「直しました」ではなく「ここが怪しい」までしか言わない。**
+ * 別版として両方置いているのか捨て漏れなのかは中身を見た人しか決められない。
+ */
+function issueLineHtml(d) {
+  const is = d.issues;
+  if (!is || !is.any) return '';
+  const parts = [];
+  if (is.duplicateVolumes) parts.push(`同じ巻に複数のファイル ${is.duplicateVolumes}巻 (余分 ${is.duplicateFiles}点)`);
+  if (is.unreadableFiles) parts.push(`何巻か読めないファイル ${is.unreadableFiles}点`);
+  return `<div class="issueline">要確認 — ${esc(parts.join(' / '))}
+    <small>どれを残すかは中身を見て決めてください。pinax はファイルを消しません</small></div>`;
+}
+
+/** 完結を人の手で決める 3 択。**フォルダの印は書き換えない** ので、いつでも「自動」へ戻せる */
+function completedSegHtml(d) {
+  const u = d.completedUser;
+  const on = (v) => (u === v ? 'true' : 'false');
+  return `<div class="setrow">
+    <span class="lab">完結</span>
+    <div class="seg" id="seg-completed" data-id="${d.id}">
+      <button data-v="auto" aria-pressed="${on(null)}">自動</button>
+      <button data-v="done" aria-pressed="${on(true)}">完結</button>
+      <button data-v="ongoing" aria-pressed="${on(false)}">継続中</button>
+    </div>
+    <span class="hint">自動 = フォルダの (完) に従う（このフォルダには${
+      d.folderCompleted ? '付いています' : '付いていません'
+    }）</span>
+  </div>`;
+}
+
+/** ファイル 1 本の行。保存と、PC なら置き場所を開く口を添える */
+function fileRowHtml(f) {
+  return `<div class="row">
+    <span class="nm"><a href="/api/files/${f.id}/download">${esc(f.relPath)}</a></span>
+    <span class="sz">${mb(f.size)}</span>
+    ${caps.reveal.available ? `<button class="mini" data-reveal-file="${f.id}">場所</button>` : ''}
+  </div>`;
+}
+
+/** 同じ巻に複数のファイルがある巻を並べる。多い作品があるので頭から 12 巻だけ出す */
+function dupSectionHtml(d) {
+  const dups = d.volumes.filter((v) => v.duplicate);
+  if (!dups.length) return '';
+  const shown = dups.slice(0, 12);
+  return `<h3 class="sec">同じ巻に複数のファイル</h3>
+  <div class="filelist">
+    ${shown.map((v) => `<div class="grp"><b>${esc(v.label)}</b>${v.files.map(fileRowHtml).join('')}</div>`).join('')}
+    ${dups.length > shown.length ? `<div class="more">ほか ${dups.length - shown.length} 巻</div>` : ''}
+  </div>`;
+}
+
+/**
+ * 詳細を開く。
+ *
+ * **履歴を 1 つ積んでから開く。** Android の戻るでモーダルだけが閉じるようにするため。
+ * 以前は `location.hash` を書き換えるだけだったので、戻るの 1 回目は URL が変わるだけで
+ * モーダルが開いたまま残り、2 回目で pinax そのものから出ていた。
+ *
+ *   mode 'push'  … 棚から開いた。戻るで閉じられる
+ *   mode 'entry' … `#/series/5` を直接開いた。積むものが無いので置き換える
+ *                  (この時だけは戻るで pinax を出る — それが正しい戻り先)
+ *   mode 'keep'  … 中身の貼り直し。履歴もスクロール位置も動かさない
+ */
+async function openDetail(id, mode = 'push') {
+  const refresh = mode === 'keep';
+  if (!refresh) {
+    $('detail').innerHTML = '<div class="empty"><span class="spin"></span> 読み込み中</div>';
+    $('sheet-title').textContent = '読み込み中';
+  }
+  showSheet();
+  const url = '#/series/' + id;
+  if (mode === 'push') history.pushState({ sheetId: id }, '', url);
+  else if (mode === 'entry') history.replaceState({ sheetId: id, entry: true }, '', url);
+
+  const top = $('detail').scrollTop;
   const d = await api('/api/series/' + id);
+  $('sheet-title').textContent = d.label || d.title;
   $('detail').innerHTML = detailHtml(d);
-  location.hash = '#/series/' + id;
+  $('detail').scrollTop = refresh ? top : 0;
+  wireDetail(d);
+}
+
+/** 詳細の中のボタンを繋ぐ。中身を貼り直すたびに呼ぶ */
+function wireDetail(d) {
+  const id = d.id;
 
   $('enrich')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget;
@@ -416,7 +596,7 @@ async function openDetail(id) {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh: true }),
       });
       toast(`NDL ${r.recordCount} 件 / 書誌 ${r.bibWritten} / 表紙 ${r.coversWritten} 枚`);
-      await openDetail(id);
+      await openDetail(id, 'keep');
       await loadGrid();
     } catch (err) {
       toast('失敗: ' + err.message, 5000);
@@ -424,12 +604,90 @@ async function openDetail(id) {
       btn.textContent = '書誌と表紙を取り直す';
     }
   });
+
+  // 完結の指定。`auto` は指定を外してフォルダの (完) に従う状態へ戻す
+  $('seg-completed')?.addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-v]');
+    if (!b) return;
+    const value = b.dataset.v === 'done' ? true : b.dataset.v === 'ongoing' ? false : null;
+    const seg = $('seg-completed');
+    seg.querySelectorAll('button').forEach((x) => { x.disabled = true; });
+    try {
+      const r = await api(`/api/series/${id}/completed`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ completed: value }),
+      });
+      toast(value === null
+        ? `自動に戻しました（今は${r.completed ? '完結' : '継続中'}）`
+        : value ? '完結にしました' : '継続中にしました');
+      await openDetail(id, 'keep');
+      await loadGrid();
+    } catch (err) {
+      toast('失敗: ' + err.message, 5000);
+      seg.querySelectorAll('button').forEach((x) => { x.disabled = false; });
+    }
+  });
+
+  // エクスプローラ。PC から見ている時しかボタンが無い (caps.reveal)
+  $('reveal')?.addEventListener('click', () => reveal(id, null));
+  $('detail').querySelectorAll('button[data-reveal-file]').forEach((b) => {
+    b.addEventListener('click', () => reveal(id, Number(b.dataset.revealFile)));
+  });
 }
 
-function closeSheet() {
-  $('sheet').hidden = true;
-  if (location.hash.startsWith('#/series/')) history.replaceState(null, '', location.pathname);
+/** pinax が動いている PC でフォルダを開く。fileId を渡すとそのファイルを選択した状態で開く */
+async function reveal(id, fileId) {
+  try {
+    await api(`/api/series/${id}/reveal`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fileId ? { fileId } : {}),
+    });
+    toast('エクスプローラで開きました');
+  } catch (e) {
+    toast('開けません: ' + e.message, 5000);
+  }
 }
+
+// ---- シートの開け閉め ---------------------------------------------------
+
+const sheetOpen = () => !$('sheet').hidden;
+
+function showSheet() {
+  if (sheetOpen()) return;
+  $('sheet').hidden = false;
+  // 板の裏で棚が動かないように止める。スマホでここを止めないと、
+  // 板の端をなぞった指が後ろの一覧を動かして、閉じた時に見ていた場所を見失う
+  document.body.style.overflow = 'hidden';
+}
+
+function hideSheet() {
+  $('sheet').hidden = true;
+  document.body.style.overflow = '';
+}
+
+/**
+ * × / 背景 / Esc から閉じる。
+ * **自分で積んだ履歴は自分で戻す** — 戻さないと、閉じた後の戻るが空振りして
+ * 「戻るを 2 回押さないと出られない」状態になる。
+ */
+function closeSheet() {
+  const st = history.state;
+  if (st && st.sheetId && !st.entry) {
+    history.back();  // 実際に閉じるのは下の popstate
+    return;
+  }
+  hideSheet();
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+}
+
+// 戻る / 進むで画面と URL を合わせる。**ここが Android の戻るの受け口**
+window.addEventListener('popstate', () => {
+  const m = location.hash.match(/^#\/series\/(\d+)/);
+  if (m) {
+    openDetail(Number(m[1]), 'keep').catch((e) => toast('失敗: ' + e.message, 5000));
+    return;
+  }
+  if (sheetOpen()) hideSheet();
+});
 
 // ---- お知らせ -----------------------------------------------------------
 
@@ -460,6 +718,8 @@ async function loadNews() {
 
 async function loadStats() {
   const h = await api('/api/health');
+  // エクスプローラを開けるかは接続元次第 (reveal.ts の頭)。サーバーの答えをそのまま使う
+  if (h.reveal) caps.reveal = h.reveal;
   const c = h.counts;
   $('stats').innerHTML =
     `<span><b>${c.series}</b> 作品</span><span><b>${c.files}</b> 冊</span><span>表紙 <b>${c.covers}</b></span>`;
@@ -473,7 +733,7 @@ $('grid').addEventListener('click', (e) => {
 });
 $('sheet').addEventListener('click', (e) => { if (e.target === $('sheet')) closeSheet(); });
 $('sheet-close').addEventListener('click', closeSheet);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('sheet').hidden) closeSheet(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheetOpen()) closeSheet(); });
 
 let qTimer = null;
 $('q').addEventListener('input', (e) => {
@@ -492,6 +752,7 @@ const toggle = (id, apply) => {
 toggle('f-gaps', (on) => { state.gaps = on; });
 toggle('f-behind', (on) => { state.behind = on; });
 toggle('f-nocover', (on) => { state.needsCover = on; });
+toggle('f-issues', (on) => { state.issues = on; });
 toggle('f-done', (on) => {
   state.completed = on ? true : undefined;
   if (on) { $('f-ongoing').setAttribute('aria-pressed', 'false'); }
@@ -535,7 +796,9 @@ $('fill').addEventListener('click', async () => {
 (async () => {
   await Promise.all([loadStats(), loadNews(), loadGrid()]);
   const m = location.hash.match(/^#\/series\/(\d+)/);
-  if (m) openDetail(Number(m[1]));
+  // 入口がここなら積むものが無い。'entry' で置き換えるだけにして、
+  // 戻るは素直に pinax の外へ出す (積んでおくと戻るが空振りする)
+  if (m) openDetail(Number(m[1]), 'entry');
 })();
 </script>
 </body>

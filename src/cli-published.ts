@@ -39,7 +39,7 @@ for (const r of rows) {
   if (!s) continue;
   const holdings = holdingsOf(db.listVolumes(s.id));
   const pub = publishedOf(db, s.id, holdings, s.enrichedAt);
-  const st = shelfStateOf(pub, s.completed, holdings);
+  const st = shelfStateOf(pub, s.completedBy, holdings);
   if (st.status === 'behind') {
     behind++;
     console.log(`  ${s.title}  ${st.label}`);

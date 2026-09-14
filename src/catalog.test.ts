@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { Db } from './db.js';
-import { checkOwned, holdingsOf } from './catalog.js';
+import { checkOwned, holdingsOf, issuesOf, listSeries } from './catalog.js';
 import { seriesKeyOf } from './volume.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pinax-test-'));
@@ -100,4 +100,137 @@ test('所持の問い合わせ: 著者の違いで同じ作品が別物になら
   // PowerDowner 側は title しか送ってこないことがある。著者をキーに含めると噛み合わなくなる
   const a = checkOwned(db, { title: 'メイドインアビス', author: '別の人', volume: '1' });
   assert.equal(a.owned, true);
+});
+
+// ---- 完結の指定 -----------------------------------------------------------
+
+test('完結の指定は人が勝つ。フォルダの印は書き換えない', () => {
+  const id = seed('[人] 継続中の作品', '継続中の作品', '人', [[1, 1, '巻']]);
+  assert.equal(db.getSeries(id)!.completed, false);
+
+  db.setCompletedOverride(id, true);
+  const after = db.getSeries(id)!;
+  assert.equal(after.completed, true);
+  assert.equal(after.completedBy, 'user');
+  // フォルダ由来は触っていない。ここを書き換えると次のスキャンで指定が消える
+  assert.equal(after.folderCompleted, false);
+});
+
+test('完結の指定はスキャンで踏み潰されない', () => {
+  const id = seed('[人] 指定を守る作品', '指定を守る作品', '人', [[1, 1, '巻']]);
+  db.setCompletedOverride(id, true);
+  // 同じフォルダをもう一度読む (印は付いていないまま)
+  db.upsertSeries({
+    rootId: 'test', folder: '[人] 指定を守る作品', seriesKey: seriesKeyOf('指定を守る作品'),
+    title: '指定を守る作品', author: '人', completed: false,
+  });
+  assert.equal(db.getSeries(id)!.completed, true);
+});
+
+test('フォルダに (完) がある作品を「継続中」に倒せる', () => {
+  // 新装版が出た作品など。フォルダの印を消して回るより、人が言い直せる方を上に置く
+  const { row } = db.upsertSeries({
+    rootId: 'test', folder: '[人] 完結していた作品(完)', seriesKey: seriesKeyOf('完結していた作品'),
+    title: '完結していた作品', author: '人', completed: true,
+  });
+  assert.equal(row.completed, true);
+  db.setCompletedOverride(row.id, false);
+  const after = db.getSeries(row.id)!;
+  assert.equal(after.completed, false);
+  assert.equal(after.completedBy, null);
+  assert.equal(after.folderCompleted, true);
+
+  // null で指定を外せばフォルダの答えへ戻る
+  db.setCompletedOverride(row.id, null);
+  assert.equal(db.getSeries(row.id)!.completed, true);
+  assert.equal(db.getSeries(row.id)!.completedBy, 'folder');
+});
+
+test('完結の絞り込みは指定を見る (生の completed ではない)', () => {
+  const { row } = db.upsertSeries({
+    rootId: 'issue', folder: '[人] 手で完結にした作品', seriesKey: seriesKeyOf('手で完結にした作品'),
+    title: '手で完結にした作品', author: '人', completed: false,
+  });
+  db.upsertVolume({ seriesId: row.id, volumeFrom: 1, volumeTo: 1, unit: '巻', completed: false });
+  db.setCompletedOverride(row.id, true);
+
+  const done = listSeries(db, { rootId: 'issue', completed: true, limit: 100 });
+  assert.ok(done.items.some((i) => i.id === row.id), '完結の絞り込みに出てこない');
+  const ongoing = listSeries(db, { rootId: 'issue', completed: false, limit: 100 });
+  assert.ok(!ongoing.items.some((i) => i.id === row.id), '継続中の絞り込みに出てしまう');
+});
+
+// ---- 棚の整合性 (巻の重複・巻数不明) --------------------------------------
+
+/** 蔵書の 1 ファイルを置く。相対パスは実物と同じ `フォルダ\ファイル名` の形にする */
+function file(seriesId: number, volumeId: number | null, name: string, part = '', partNo: number | null = null): void {
+  const folder = db.getSeries(seriesId)!.folder;
+  const relPath = `${folder}${path.sep}${name}`;
+  db.upsertFile({
+    rootId: 'issue', relPath, seriesId, volumeId, size: 1, mtime: null,
+    ext: name.slice(name.lastIndexOf('.')), part, partNo, tags: [],
+  });
+}
+
+test('同じ巻に別々のファイルがあれば重複として数える', () => {
+  const { row: s } = db.upsertSeries({
+    rootId: 'issue', folder: '[人] 重複作品', seriesKey: seriesKeyOf('重複作品'),
+    title: '重複作品', author: '人', completed: false,
+  });
+  const { row: v } = db.upsertVolume({ seriesId: s.id, volumeFrom: 1, volumeTo: 1, unit: '巻', completed: false });
+  file(s.id, v.id, '[人] 重複作品 第01巻.rar');
+  file(s.id, v.id, '[人] 重複作品 副題つき 第01巻.zip');
+
+  const is = issuesOf(db, s.id);
+  assert.equal(is.duplicateVolumes, 1);
+  assert.equal(is.duplicateFiles, 1);
+  assert.equal(is.any, true);
+});
+
+test('分割書庫の続きは重複ではない', () => {
+  // .part1 / .part2 も .rar + .r00 も 1 巻 1 本。ここを重複と言うと本物が埋もれる
+  const { row: s } = db.upsertSeries({
+    rootId: 'issue', folder: '[人] 分割作品', seriesKey: seriesKeyOf('分割作品'),
+    title: '分割作品', author: '人', completed: false,
+  });
+  const { row: v1 } = db.upsertVolume({ seriesId: s.id, volumeFrom: 1, volumeTo: 1, unit: '巻', completed: false });
+  file(s.id, v1.id, '[人] 分割作品 第01巻.part1.rar', '.part1', 1);
+  file(s.id, v1.id, '[人] 分割作品 第01巻.part2.rar', '.part2', 2);
+
+  const { row: v2 } = db.upsertVolume({ seriesId: s.id, volumeFrom: 2, volumeTo: 2, unit: '巻', completed: false });
+  file(s.id, v2.id, '[人] 分割作品 第02巻.rar');
+  file(s.id, v2.id, '[人] 分割作品 第02巻.r00', '', 0);
+  file(s.id, v2.id, '[人] 分割作品 第02巻.r01', '', 1);
+
+  const is = issuesOf(db, s.id);
+  assert.equal(is.duplicateVolumes, 0);
+  assert.equal(is.any, false);
+});
+
+test('巻数を読めなかったファイルは要確認に上がる', () => {
+  const { row: s } = db.upsertSeries({
+    rootId: 'issue', folder: '[人] 読めない作品', seriesKey: seriesKeyOf('読めない作品'),
+    title: '読めない作品', author: '人', completed: false,
+  });
+  const { row: v } = db.upsertVolume({ seriesId: s.id, volumeFrom: 1, volumeTo: 1, unit: '巻', completed: false });
+  file(s.id, v.id, '[人] 読めない作品 第01巻.rar');
+  file(s.id, null, 'おまけ.rar');
+
+  const is = issuesOf(db, s.id);
+  assert.equal(is.unreadableFiles, 1);
+  assert.equal(is.duplicateVolumes, 0);
+  assert.equal(is.any, true);
+});
+
+test('要確認の絞り込みは総数にも効く', () => {
+  // gapsOnly のように後から篩うと「49 件」と出して 60 件並ぶ、という食い違いになる
+  const any = listSeries(db, { rootId: 'issue', issues: 'any', limit: 100 });
+  assert.equal(any.total, any.items.length);
+  assert.ok(any.items.every((i) => i.issues.any));
+
+  const dup = listSeries(db, { rootId: 'issue', issues: 'dup', limit: 100 });
+  assert.ok(dup.items.every((i) => i.issues.duplicateVolumes > 0));
+  const loose = listSeries(db, { rootId: 'issue', issues: 'loose', limit: 100 });
+  assert.ok(loose.items.every((i) => i.issues.unreadableFiles > 0));
+  assert.ok(dup.total < any.total && loose.total < any.total, '重複と巻数不明が同じ集合になっている');
 });
