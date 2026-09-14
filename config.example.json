@@ -1,0 +1,29 @@
+{
+  "port": 3838,
+  "host": "0.0.0.0",
+  "dataDir": "data",
+  "apiToken": "",
+  "roots": [
+    {
+      "id": "nas",
+      "label": "NAS 蔵書",
+      "path": "\\\\192.168.3.30\\disk1_pt1\\manga",
+      "kind": "shelf"
+    }
+  ],
+  "scan": {
+    "onStart": true,
+    "intervalMinutes": 60
+  },
+  "bib": {
+    "ttlDays": 90,
+    "minIntervalMs": 1200,
+    "providers": [
+      "ndl",
+      "openbd"
+    ]
+  },
+  "notify": {
+    "ntfyUrl": ""
+  }
+}

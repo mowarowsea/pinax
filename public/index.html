@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>pinax — 蔵書</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23AD3D2B'/%3E%3Cpath d='M8 7h5.5c1.9 0 3 1 3 2.6V25H8zm8.5 2.6C16.5 8 17.6 7 19.5 7H24v18h-7.5z' fill='%23F6EFE7'/%3E%3C/svg%3E">
+<style>
+:root {
+  --brand: #AD3D2B;
+  --brand-dim: #8d3123;
+  --brand-soft: #f6e7e3;
+  --ink: #22201f;
+  --ink-2: #5d5754;
+  --ink-3: #8d8582;
+  --bg: #faf7f3;
+  --panel: #ffffff;
+  --line: #e6ded6;
+  --gap: #c2410c;
+  --ok: #3f7d58;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(40,25,20,.06), 0 6px 18px rgba(40,25,20,.07);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand: #d05942;
+    --brand-dim: #b9452f;
+    --brand-soft: #3a221d;
+    --ink: #ece6e1;
+    --ink-2: #b5aba5;
+    --ink-3: #867c77;
+    --bg: #171412;
+    --panel: #201b19;
+    --line: #352d29;
+    --gap: #e0703f;
+    --ok: #6cae87;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 18px rgba(0,0,0,.35);
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.6 "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+}
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--brand); }
+
+/* ---- ヘッダ ---- */
+header {
+  position: sticky; top: 0; z-index: 30;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.bar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; flex-wrap: wrap; }
+.brand { display: flex; align-items: baseline; gap: 10px; margin-right: auto; }
+.logo {
+  font: 700 22px/1 "Palatino Linotype", "Hiragino Mincho ProN", serif;
+  letter-spacing: .14em; color: var(--brand); text-transform: lowercase;
+}
+.tagline { font-size: 11px; color: var(--ink-3); letter-spacing: .04em; }
+.stats { font-size: 12px; color: var(--ink-2); display: flex; gap: 14px; }
+.stats b { color: var(--ink); font-weight: 600; }
+
+.btn {
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink-2);
+  border-radius: 8px; padding: 7px 13px; font-size: 13px; white-space: nowrap;
+}
+.btn:hover { border-color: var(--brand); color: var(--brand); }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+.btn.primary:hover { background: var(--brand-dim); color: #fff; }
+.btn[disabled] { opacity: .5; cursor: default; }
+
+/* ---- 道具立て ---- */
+.tools { display: flex; gap: 8px; padding: 0 20px 12px; flex-wrap: wrap; align-items: center; }
+.search {
+  flex: 1 1 240px; min-width: 180px; max-width: 420px;
+  border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 8px 12px;
+}
+.search:focus { outline: 2px solid var(--brand-soft); border-color: var(--brand); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  border: 1px solid var(--line); background: transparent; color: var(--ink-2);
+  border-radius: 999px; padding: 6px 13px; font-size: 12.5px;
+}
+.chip[aria-pressed="true"] { background: var(--brand); border-color: var(--brand); color: #fff; }
+select.sort { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
+
+/* ---- お知らせ ---- */
+.news { margin: 16px 20px 0; border: 1px solid var(--line); border-left: 3px solid var(--brand); border-radius: var(--radius); background: var(--panel); }
+.news-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; font-size: 13px; font-weight: 600; }
+.news-head .count { background: var(--brand); color: #fff; border-radius: 999px; padding: 1px 8px; font-size: 11px; }
+.news ul { margin: 0; padding: 0 14px 12px; list-style: none; display: grid; gap: 6px; }
+.news li { font-size: 13px; color: var(--ink-2); display: flex; gap: 8px; }
+.news li b { color: var(--ink); font-weight: 600; }
+.news .kind { color: var(--brand); font-size: 11px; border: 1px solid var(--brand); border-radius: 4px; padding: 0 5px; align-self: center; }
+
+/* ---- 棚 ---- */
+main { padding: 16px 20px 60px; }
+.count-line { font-size: 12px; color: var(--ink-3); margin: 4px 2px 12px; }
+.grid {
+  display: grid; gap: 18px 14px;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+}
+.card { background: none; border: 0; padding: 0; text-align: left; display: flex; flex-direction: column; gap: 7px; }
+.cover {
+  position: relative; aspect-ratio: 2 / 3; border-radius: 6px; overflow: hidden;
+  background: linear-gradient(150deg, var(--brand-soft), var(--line));
+  box-shadow: var(--shadow); display: grid; place-items: center;
+}
+.cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover .none {
+  font: 600 11px/1.5 sans-serif; color: var(--ink-3); text-align: center; padding: 8px; word-break: break-word;
+}
+.card:hover .cover { outline: 2px solid var(--brand); outline-offset: 2px; }
+.badges { position: absolute; top: 5px; left: 5px; right: 5px; display: flex; gap: 4px; flex-wrap: wrap; }
+.badge { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; color: #fff; background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
+.badge.gap { background: var(--gap); }
+.badge.done { background: var(--ok); }
+.c-title { font-size: 12.5px; font-weight: 600; line-height: 1.35; }
+.c-meta { font-size: 11px; color: var(--ink-3); }
+
+/* ---- 詳細 ---- */
+.sheet {
+  position: fixed; inset: 0; z-index: 50; background: rgba(25,15,12,.45);
+  display: flex; justify-content: center; align-items: flex-start; padding: 3vh 16px; overflow: auto;
+}
+.sheet[hidden] { display: none; }
+.sheet-inner {
+  background: var(--panel); border-radius: 14px; box-shadow: var(--shadow);
+  width: min(920px, 100%); padding: 22px; position: relative;
+}
+.close { position: absolute; top: 12px; right: 12px; border: 0; background: transparent; font-size: 22px; color: var(--ink-3); line-height: 1; padding: 4px 8px; }
+.d-head { display: flex; gap: 20px; flex-wrap: wrap; }
+.d-cover { width: 150px; flex: none; aspect-ratio: 2/3; border-radius: 8px; overflow: hidden; background: var(--brand-soft); box-shadow: var(--shadow); }
+.d-cover img { width: 100%; height: 100%; object-fit: cover; }
+.d-info { flex: 1 1 280px; min-width: 0; }
+.d-info h2 { margin: 0 0 4px; font-size: 20px; line-height: 1.35; }
+.d-author { color: var(--brand); font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12.5px; color: var(--ink-2); }
+.kv dt { color: var(--ink-3); }
+.kv dd { margin: 0; word-break: break-all; }
+.gapline { margin: 12px 0 0; padding: 9px 12px; border-radius: 8px; background: var(--brand-soft); color: var(--gap); font-size: 13px; font-weight: 600; }
+.d-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+
+h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 10px; border-top: 1px solid var(--line); padding-top: 14px; }
+.vols { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
+.vol { display: flex; flex-direction: column; gap: 5px; }
+.vol .cover { aspect-ratio: 2/3; }
+.vol .lbl { font-size: 11.5px; font-weight: 600; text-align: center; }
+.vol .sz { font-size: 10px; color: var(--ink-3); text-align: center; }
+.vol .dl { font-size: 11px; text-align: center; border: 1px solid var(--line); border-radius: 5px; padding: 3px; text-decoration: none; color: var(--ink-2); display: block; }
+.vol .dl:hover { border-color: var(--brand); color: var(--brand); }
+.vol.missing .cover { background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--line) 6px, var(--line) 7px); box-shadow: none; border: 1px dashed var(--gap); }
+.vol.missing .lbl { color: var(--gap); }
+.loose { font-size: 12px; color: var(--ink-2); display: grid; gap: 4px; }
+.loose a { text-decoration: none; }
+
+.empty { text-align: center; color: var(--ink-3); padding: 60px 20px; }
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 80;
+  background: var(--ink); color: var(--bg); padding: 10px 18px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow);
+}
+.toast[hidden] { display: none; }
+.spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <div class="brand">
+      <span class="logo">pinax</span>
+      <span class="tagline">Never burn. Remember Alexandria.</span>
+    </div>
+    <div class="stats" id="stats"></div>
+    <button class="btn" id="scan">棚を読み直す</button>
+    <button class="btn" id="fill">表紙を進める</button>
+  </div>
+  <div class="tools">
+    <input class="search" id="q" type="search" placeholder="作品名・著者で探す" autocomplete="off">
+    <div class="chips">
+      <button class="chip" id="f-gaps" aria-pressed="false">欠番あり</button>
+      <button class="chip" id="f-done" aria-pressed="false">完結</button>
+      <button class="chip" id="f-ongoing" aria-pressed="false">継続中</button>
+      <button class="chip" id="f-nocover" aria-pressed="false">表紙なし</button>
+    </div>
+    <select class="sort" id="sort">
+      <option value="title">作品名順</option>
+      <option value="author">著者順</option>
+      <option value="volumes">冊数順</option>
+      <option value="added">登録が新しい順</option>
+    </select>
+  </div>
+</header>
+
+<div id="news"></div>
+
+<main>
+  <div class="count-line" id="countline"></div>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" hidden>見つかりませんでした</div>
+</main>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-inner">
+    <button class="close" id="sheet-close" aria-label="閉じる">&times;</button>
+    <div id="detail"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const mb = (n) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(1) + ' GB' : (n / (1 << 20)).toFixed(0) + ' MB';
+
+let toastTimer = null;
+function toast(msg, ms = 3000) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || `${r.status}`);
+  return body;
+}
+
+const state = { q: '', gaps: false, completed: undefined, needsCover: false, sort: 'title' };
+
+// ---- 棚 ----------------------------------------------------------------
+
+function coverHtml(url, fallback) {
+  return url
+    ? `<img loading="lazy" src="${url}" alt="">`
+    : `<span class="none">${esc(fallback)}</span>`;
+}
+
+function cardHtml(s) {
+  const h = s.holdings[0];
+  const badges = [];
+  if (s.hasGap) badges.push(`<span class="badge gap">欠番 ${s.holdings.reduce((n, x) => n + x.missing.length, 0)}</span>`);
+  if (s.completed) badges.push('<span class="badge done">完</span>');
+  const range = h ? `1〜${h.max}${h.unit}` : (s.looseFiles ? `${s.looseFiles}点` : '');
+  return `<button class="card" data-id="${s.id}">
+    <span class="cover">${coverHtml(s.coverUrl, s.title)}
+      ${badges.length ? `<span class="badges">${badges.join('')}</span>` : ''}</span>
+    <span class="c-title">${esc(s.title)}</span>
+    <span class="c-meta">${esc(s.author ?? '著者不明')}${range ? ' · ' + range : ''}</span>
+  </button>`;
+}
+
+async function loadGrid() {
+  const p = new URLSearchParams({ sort: state.sort, limit: '500' });
+  if (state.q) p.set('q', state.q);
+  if (state.gaps) p.set('gaps', '1');
+  if (state.completed !== undefined) p.set('completed', state.completed ? '1' : '0');
+  if (state.needsCover) p.set('needsCover', '1');
+
+  const { total, items } = await api('/api/series?' + p);
+  $('grid').innerHTML = items.map(cardHtml).join('');
+  $('empty').hidden = items.length > 0;
+  const shown = items.length;
+  $('countline').textContent = state.gaps
+    ? `欠番のある作品 ${shown} 件`
+    : `${shown} 件を表示${total > shown ? ` (該当 ${total} 件)` : ''}`;
+}
+
+// ---- 詳細 ---------------------------------------------------------------
+
+function volHtml(v) {
+  const f = v.files[0];
+  const size = v.files.reduce((n, x) => n + x.size, 0);
+  const tags = v.files.flatMap((x) => x.tags);
+  const dl = v.files.length === 1
+    ? `<a class="dl" href="/api/files/${f.id}/download">保存</a>`
+    : `<a class="dl" href="/api/files/${f.id}/download">保存 (1/${v.files.length})</a>`;
+  return `<div class="vol">
+    <span class="cover">${coverHtml(v.coverUrl, v.label)}
+      ${v.completed ? '<span class="badges"><span class="badge done">完</span></span>' : ''}</span>
+    <span class="lbl">${esc(v.label)}${tags.length ? ' ' + esc(tags.join(',')) : ''}</span>
+    <span class="sz">${mb(size)}</span>
+    ${dl}
+  </div>`;
+}
+
+function missingVolHtml(n, unit) {
+  return `<div class="vol missing">
+    <span class="cover"></span>
+    <span class="lbl">第${String(n).padStart(2, '0')}${unit}</span>
+    <span class="sz">未所持</span>
+  </div>`;
+}
+
+function detailHtml(d) {
+  const bib = d.bib ?? {};
+  const gapText = d.holdings
+    .filter((h) => h.missing.length)
+    .map((h) => `${h.unit}: ${h.missing.join(', ')}`)
+    .join(' / ');
+
+  // 持っている巻と欠番を 1 本の数直線に並べる。歯抜けが目で見える形にする
+  const main = d.holdings.find((h) => h.unit === '巻') ?? d.holdings[0];
+  const owned = new Map();
+  for (const v of d.volumes) if (!main || v.unit === main.unit) owned.set(v.volumeFrom, v);
+  const line = [];
+  if (main) {
+    for (let i = 1; i <= main.max; i++) {
+      const v = owned.get(i);
+      if (v) line.push(volHtml(v));
+      else if (!d.volumes.some((x) => x.volumeFrom <= i && x.volumeTo >= i)) line.push(missingVolHtml(i, main.unit));
+    }
+    // 範囲でしか持っていない巻 (合本) は数直線に乗らないので後ろに足す
+    for (const v of d.volumes) if (v.volumeFrom !== v.volumeTo) line.push(volHtml(v));
+  } else {
+    for (const v of d.volumes) line.push(volHtml(v));
+  }
+
+  return `
+  <div class="d-head">
+    <div class="d-cover">${coverHtml(d.coverUrl, d.title)}</div>
+    <div class="d-info">
+      <h2>${esc(d.title)}${d.completed ? ' <span class="badge done">完結</span>' : ''}</h2>
+      <div class="d-author">${esc(d.author ?? '著者不明')}</div>
+      <dl class="kv">
+        <dt>所持</dt><dd>${d.fileCount} 冊 · ${mb(d.bytes)}${d.looseFiles ? ` (巻数不明 ${d.looseFiles} 点)` : ''}</dd>
+        ${bib.publisher ? `<dt>出版</dt><dd>${esc(bib.publisher)}${bib.pubdate ? ` (${esc(bib.pubdate)})` : ''}</dd>` : ''}
+        ${bib.isbn ? `<dt>ISBN</dt><dd>${esc(bib.isbn)}</dd>` : ''}
+        <dt>フォルダ</dt><dd>${esc(d.folder)}</dd>
+      </dl>
+      ${gapText ? `<div class="gapline">欠番 ${esc(gapText)}</div>` : ''}
+      <div class="d-actions">
+        <button class="btn" id="enrich" data-id="${d.id}">書誌と表紙を取り直す</button>
+      </div>
+    </div>
+  </div>
+  <h3 class="sec">巻</h3>
+  <div class="vols">${line.join('')}</div>
+  ${d.loose.length ? `<h3 class="sec">巻数を読めなかったファイル</h3>
+    <div class="loose">${d.loose.map((f) => `<a href="/api/files/${f.id}/download">${esc(f.relPath)}</a> <span class="sz">${mb(f.size)}</span>`).join('')}</div>` : ''}
+  `;
+}
+
+async function openDetail(id) {
+  $('detail').innerHTML = '<div class="empty"><span class="spin"></span> 読み込み中</div>';
+  $('sheet').hidden = false;
+  const d = await api('/api/series/' + id);
+  $('detail').innerHTML = detailHtml(d);
+  location.hash = '#/series/' + id;
+
+  $('enrich')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span> 取得中';
+    try {
+      const r = await api(`/api/series/${id}/enrich`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh: true }),
+      });
+      toast(`NDL ${r.recordCount} 件 / 書誌 ${r.bibWritten} / 表紙 ${r.coversWritten} 枚`);
+      await openDetail(id);
+      await loadGrid();
+    } catch (err) {
+      toast('失敗: ' + err.message, 5000);
+      btn.disabled = false;
+      btn.textContent = '書誌と表紙を取り直す';
+    }
+  });
+}
+
+function closeSheet() {
+  $('sheet').hidden = true;
+  if (location.hash.startsWith('#/series/')) history.replaceState(null, '', location.pathname);
+}
+
+// ---- お知らせ -----------------------------------------------------------
+
+const KIND = { series_added: '新着', volume_added: '新刊', series_completed: '完結', volume_gone: '不明' };
+
+async function loadNews() {
+  const { events } = await api('/api/events?unread=1&limit=12');
+  if (!events.length) { $('news').innerHTML = ''; return; }
+  $('news').innerHTML = `<div class="news">
+    <div class="news-head">お知らせ <span class="count">${events.length}</span>
+      <button class="btn" id="news-read" style="margin-left:auto">既読にする</button></div>
+    <ul>${events.map((e) => `<li><span class="kind">${esc(KIND[e.kind] ?? e.kind)}</span>
+      <b data-series="${e.series_id ?? ''}">${esc(e.title)}</b> ${esc(e.detail ?? '')}</li>`).join('')}</ul>
+  </div>`;
+  $('news-read').addEventListener('click', async () => {
+    await api('/api/events/read', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: events.map((e) => e.id) }),
+    });
+    loadNews();
+  });
+  $('news').querySelectorAll('b[data-series]').forEach((el) => {
+    if (!el.dataset.series) return;
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', () => openDetail(Number(el.dataset.series)));
+  });
+}
+
+async function loadStats() {
+  const h = await api('/api/health');
+  const c = h.counts;
+  $('stats').innerHTML =
+    `<span><b>${c.series}</b> 作品</span><span><b>${c.files}</b> 冊</span><span>表紙 <b>${c.covers}</b></span>`;
+}
+
+// ---- つなぎ込み ---------------------------------------------------------
+
+$('grid').addEventListener('click', (e) => {
+  const card = e.target.closest('.card');
+  if (card) openDetail(Number(card.dataset.id));
+});
+$('sheet').addEventListener('click', (e) => { if (e.target === $('sheet')) closeSheet(); });
+$('sheet-close').addEventListener('click', closeSheet);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('sheet').hidden) closeSheet(); });
+
+let qTimer = null;
+$('q').addEventListener('input', (e) => {
+  clearTimeout(qTimer);
+  qTimer = setTimeout(() => { state.q = e.target.value.trim(); loadGrid(); }, 250);
+});
+
+const toggle = (id, apply) => {
+  $(id).addEventListener('click', () => {
+    const on = $(id).getAttribute('aria-pressed') === 'true';
+    $(id).setAttribute('aria-pressed', String(!on));
+    apply(!on);
+    loadGrid();
+  });
+};
+toggle('f-gaps', (on) => { state.gaps = on; });
+toggle('f-nocover', (on) => { state.needsCover = on; });
+toggle('f-done', (on) => {
+  state.completed = on ? true : undefined;
+  if (on) { $('f-ongoing').setAttribute('aria-pressed', 'false'); }
+});
+toggle('f-ongoing', (on) => {
+  state.completed = on ? false : undefined;
+  if (on) { $('f-done').setAttribute('aria-pressed', 'false'); }
+});
+$('sort').addEventListener('change', (e) => { state.sort = e.target.value; loadGrid(); });
+
+$('scan').addEventListener('click', async () => {
+  const b = $('scan');
+  b.disabled = true;
+  b.innerHTML = '<span class="spin"></span> 読み直し中';
+  try {
+    const { results } = await api('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const r = results[0] ?? {};
+    toast(r.error ? r.error : `${r.filesSeen} ファイル / 作品 +${r.seriesAdded} / 巻 +${r.volumesAdded}`, 5000);
+    await Promise.all([loadGrid(), loadNews(), loadStats()]);
+  } catch (e) { toast('失敗: ' + e.message, 5000); }
+  b.disabled = false;
+  b.textContent = '棚を読み直す';
+});
+
+$('fill').addEventListener('click', async () => {
+  const b = $('fill');
+  b.disabled = true;
+  b.innerHTML = '<span class="spin"></span> 取得中';
+  try {
+    const { results } = await api('/api/covers/fill', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ seriesLimit: 5 }),
+    });
+    const n = results.reduce((a, r) => a + r.coversWritten, 0);
+    toast(n ? `${results.length} 作品 / 表紙 ${n} 枚を焼きました` : `${results.length} 作品を見ましたが表紙は取れませんでした`, 5000);
+    await Promise.all([loadGrid(), loadStats()]);
+  } catch (e) { toast('失敗: ' + e.message, 5000); }
+  b.disabled = false;
+  b.textContent = '表紙を進める';
+});
+
+(async () => {
+  await Promise.all([loadStats(), loadNews(), loadGrid()]);
+  const m = location.hash.match(/^#\/series\/(\d+)/);
+  if (m) openDetail(Number(m[1]));
+})();
+</script>
+</body>
+</html>
