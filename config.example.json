@@ -13,7 +13,7 @@
   ],
   "scan": {
     "onStart": true,
-    "intervalMinutes": 60
+    "intervalMinutes": 180
   },
   "bib": {
     "ttlDays": 90,

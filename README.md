@@ -43,7 +43,7 @@ npm start                            # http://localhost:3838
 | `apiToken` | 空 | `/api/own` を叩く時の共有トークン。空なら認証なし |
 | `roots[].kind` | `shelf` | `shelf` は整理済みの蔵書、`inbox` は受け入れトレイ (下記) |
 | `scan.onStart` | `true` | 起動時に 1 回スキャンする |
-| `scan.intervalMinutes` | `60` | 定期スキャンの間隔。`0` で止まる |
+| `scan.intervalMinutes` | `180` | 定期スキャンの間隔。`0` で止まる。1 回で NAS を 50 秒歩くので短くしない — 落とした直後は画面の「棚を読み直す」で足りる |
 | `bib.ttlDays` | `90` | 書誌キャッシュの寿命。**切れても捨てない** |
 | `bib.minIntervalMs` | `1200` | 外部 API を叩く最低間隔 |
 | `notify.ntfyUrl` | 空 | 新着の通知先。空でも画面のお知らせには残る |

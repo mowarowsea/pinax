@@ -86,7 +86,7 @@ const DEFAULTS: Config = {
   dataDir: 'data',
   apiToken: '',
   roots: [],
-  scan: { onStart: true, intervalMinutes: 60 },
+  scan: { onStart: true, intervalMinutes: 180 },
   bib: {
     ttlDays: 90,
     minIntervalMs: 1200,
