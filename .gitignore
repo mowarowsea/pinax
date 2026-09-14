@@ -3,3 +3,6 @@ dist/
 data/
 config.json
 *.log
+.env
+.env.*
+!.env.example

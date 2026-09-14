@@ -1,6 +1,7 @@
 import type { Db, SeriesRow, VolumeRow } from './db.js';
 import { parseFilename, seriesLabel } from './naming.js';
 import { parseItem, seriesKeyOf } from './volume.js';
+import { publishedOf, shelfStateOf, type PublishedInfo, type ShelfState } from './published.js';
 
 /**
  * カタログの読み出し。「何を持っていて、何を持っていないか」の答えはここで作る。
@@ -33,8 +34,14 @@ export interface SeriesSummary {
   /** 巻数を読めなかったファイルの数。欠番計算に参加していない */
   looseFiles: number;
   holdings: Holding[];
-  /** 抜けが 1 つでもあるか */
+  /** 抜けが 1 つでもあるか (**持っている範囲の中の**抜け) */
   hasGap: boolean;
+  /**
+   * 外の書誌と突き合わせた棚の状態。
+   * `hasGap` が「持っている 1〜10 巻の間の穴」なのに対し、こちらは
+   * **「11 巻以降が出ている」** を見る。買い逃しに効くのは後者
+   */
+  shelf: ShelfState;
   coverUrl: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
@@ -64,8 +71,12 @@ export function holdingsOf(volumes: VolumeRow[]): Holding[] {
 
 export interface ListOptions {
   q?: string;
-  /** 抜けのある作品だけ */
+  /** 抜けのある作品だけ (持っている範囲の中の穴) */
   gapsOnly?: boolean;
+  /** 続きが出ている作品だけ (手元の最大巻より先が出ている) */
+  behindOnly?: boolean;
+  /** 出ているのに持っていない巻が 1 つでもある作品だけ */
+  missingOnly?: boolean;
   completed?: boolean;
   rootId?: string;
   /** 表紙がまだ無いものだけ */
@@ -134,6 +145,8 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
   const items = rows.map((r) => {
     const volumes = db.listVolumes(Number(r.id));
     const holdings = holdingsOf(volumes);
+    const completed = Number(r.completed) === 1;
+    const pub = publishedOf(db, Number(r.id), holdings, (r.enriched_at as string | null) ?? null);
     return {
       id: Number(r.id),
       rootId: String(r.root_id),
@@ -142,20 +155,24 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
       title: String(r.title),
       author: (r.author as string | null) ?? null,
       label: seriesLabel(r.author as string | null, String(r.title)),
-      completed: Number(r.completed) === 1,
+      completed,
       present: Number(r.present) === 1,
       fileCount: Number(r.file_count),
       bytes: Number(r.bytes),
       looseFiles: Number(r.loose),
       holdings,
       hasGap: holdings.some((h) => h.missing.length > 0),
+      shelf: shelfStateOf(pub, completed, holdings),
       coverUrl: r.cover_id ? `/api/covers/${Number(r.cover_id)}` : null,
       firstSeenAt: String(r.first_seen_at),
       lastSeenAt: String(r.last_seen_at),
     } satisfies SeriesSummary;
   });
 
-  const filtered = opts.gapsOnly ? items.filter((i) => i.hasGap) : items;
+  let filtered = items;
+  if (opts.gapsOnly) filtered = filtered.filter((i) => i.hasGap);
+  if (opts.behindOnly) filtered = filtered.filter((i) => i.shelf.aheadCount > 0);
+  if (opts.missingOnly) filtered = filtered.filter((i) => i.shelf.missingCount > 0);
   return { total, items: filtered };
 }
 
@@ -181,6 +198,11 @@ export interface VolumeDetail {
 }
 
 export interface SeriesDetail extends SeriesSummary {
+  /**
+   * 外の書誌が知っている巻。**「全何巻」ではなく下限**として読むこと。
+   * 詳しくは published.ts の頭
+   */
+  published: PublishedInfo;
   volumes: VolumeDetail[];
   /** 巻数を読めなかったファイル。欠番には効かないが、持ってはいる */
   loose: VolumeDetail['files'];
@@ -237,6 +259,7 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
 
   return {
     ...summary,
+    published: publishedOf(db, id, summary.holdings, s.enrichedAt),
     volumes: details,
     loose: fileRows.filter((r) => r.volume_id === null).map(toFile),
     bib: bibRow ? { ...bibRow, raw: JSON.parse(String(bibRow.raw ?? '{}')) } : null,
@@ -255,6 +278,7 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
     .prepare('SELECT id FROM covers WHERE series_id = ? AND volume_no IS NULL')
     .get(s.id) as { id: number } | undefined;
   const holdings = holdingsOf(db.listVolumes(s.id));
+  const pub = publishedOf(db, s.id, holdings, s.enrichedAt);
   return {
     id: s.id,
     rootId: s.rootId,
@@ -270,6 +294,7 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
     looseFiles: Number(agg.loose ?? 0),
     holdings,
     hasGap: holdings.some((h) => h.missing.length > 0),
+    shelf: shelfStateOf(pub, s.completed, holdings),
     coverUrl: cover ? `/api/covers/${cover.id}` : null,
     firstSeenAt: s.firstSeenAt,
     lastSeenAt: s.lastSeenAt,

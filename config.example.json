@@ -20,8 +20,12 @@
     "minIntervalMs": 1200,
     "providers": [
       "ndl",
+      "rakuten",
       "openbd"
-    ]
+    ],
+    "rakuten": {
+      "imageSize": 600
+    }
   },
   "notify": {
     "ntfyUrl": ""

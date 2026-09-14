@@ -6,7 +6,7 @@ import fastifyStatic from '@fastify/static';
 import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { checkOwned, getSeriesDetail, listSeries, type OwnQuery } from './catalog.js';
-import { enrichSeries, fillMissingCovers } from './bib/enrich.js';
+import { enrichSeries, fillMissingCovers, fillVolumeCovers } from './bib/enrich.js';
 import { searchNdl } from './bib/ndl.js';
 import { cachedFetch } from './bib/cache.js';
 import { scanAll, scanRoot } from './scan/scanner.js';
@@ -73,6 +73,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   app.get<{
     Querystring: {
       q?: string; gaps?: string; completed?: string; root?: string; needsCover?: string;
+      behind?: string; missing?: string;
       sort?: string; limit?: string; offset?: string;
     };
   }>('/api/series', async (req) => {
@@ -85,6 +86,9 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
       completed: bool(qs.completed),
       rootId: qs.root || undefined,
       needsCover: bool(qs.needsCover) ?? false,
+      // 「続きが出ている」= 手元の最大巻より先が出ている。買い逃しに効くのはこちら
+      behindOnly: bool(qs.behind) ?? false,
+      missingOnly: bool(qs.missing) ?? false,
       sort: (qs.sort as 'title' | 'author' | 'added' | 'volumes' | undefined) ?? 'title',
       limit: qs.limit ? Number(qs.limit) : undefined,
       offset: qs.offset ? Number(qs.offset) : undefined,
@@ -95,6 +99,42 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     const detail = getSeriesDetail(db, Number(req.params.id));
     if (!detail) throw new HttpError(404, 'その作品はありません');
     return detail;
+  });
+
+  /**
+   * **持っていない巻の一覧。** 棚をまたいで「次に何を探せばいいか」を出す。
+   *
+   * `ahead` (手元の最大巻より先) と `gap` (持っている範囲の中の穴) を分けて返す。
+   * 前者は買い逃し、後者は取りこぼしで、対処が違う。
+   */
+  app.get<{ Querystring: { kind?: string; limit?: string } }>('/api/missing', async (req) => {
+    const kind = req.query.kind === 'gap' ? 'gap' : req.query.kind === 'all' ? 'all' : 'ahead';
+    const limit = Math.min(Number(req.query.limit ?? 200), 1000);
+    const { items } = listSeries(db, { limit: 500 });
+
+    const out = items
+      .map((it) => {
+        const gaps = it.holdings.find((h) => h.unit === '巻')?.missing ?? [];
+        return {
+          id: it.id,
+          label: it.label,
+          title: it.title,
+          author: it.author,
+          completed: it.completed,
+          ownedMax: it.shelf.ownedMax,
+          publishedMax: it.shelf.publishedMax,
+          latestYear: it.shelf.latestYear,
+          status: it.shelf.status,
+          note: it.shelf.label,
+          aheadCount: it.shelf.aheadCount,
+          gapVolumes: gaps,
+          coverUrl: it.coverUrl,
+        };
+      })
+      .filter((x) => (kind === 'gap' ? x.gapVolumes.length > 0 : kind === 'ahead' ? x.aheadCount > 0 : x.gapVolumes.length > 0 || x.aheadCount > 0))
+      .slice(0, limit);
+
+    return { kind, count: out.length, items: out };
   });
 
   // ---- 所持の問い合わせ (PowerDowner / DryEyes 向け) ----------------------
@@ -143,6 +183,15 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   app.post<{ Body: { seriesLimit?: number } }>('/api/covers/fill', async (req) => {
     const results = await fillMissingCovers(db, cfg, { seriesLimit: req.body?.seriesLimit ?? 5 });
     return { results };
+  });
+
+  /**
+   * 作品の中で抜けている巻の表紙を埋める。
+   * `/api/covers/fill` が「表紙の無い作品」を見るのに対し、こちらは
+   * **ISBN は分かっているのに表紙が無い巻**を見る (楽天の鍵が要る)。
+   */
+  app.post<{ Body: { limit?: number } }>('/api/covers/fill-volumes', async (req) => {
+    return fillVolumeCovers(db, cfg, { limit: req.body?.limit ?? 20 });
   });
 
   app.get<{ Params: { id: string } }>('/api/covers/:id', async (req, reply) => {

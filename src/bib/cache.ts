@@ -30,11 +30,32 @@ export interface CachedResponse {
 export interface FetchOptions {
   provider: string;
   url: string;
+  /**
+   * キャッシュの見出しに使う URL。省略すると `url` をそのまま使う。
+   *
+   * **鍵をクエリに載せる提供元 (楽天) では必ず渡すこと。** 理由は 2 つ:
+   *  1. `http_cache.url` に鍵がそのまま残る。DB を覗いただけで鍵が読める状態にしない
+   *  2. 鍵を入れ替えた瞬間に見出しが総入れ替えになり、**焼いたキャッシュが全部迷子になる**。
+   *     答えの中身は鍵に依存しないのだから、見出しも依存させてはいけない
+   */
+  cacheUrl?: string;
   /** 既定は config の bib.ttlDays */
   ttlDays?: number;
   headers?: Record<string, string>;
   /** true なら期限内のキャッシュも無視して取り直す (取れなければ古い値のまま) */
   refresh?: boolean;
+  /**
+   * **この状態コードの応答は焼かない。**
+   *
+   * 鍵や接続元 IP の間違いを焼いてはいけない。楽天は登録外の IP から叩くと
+   * `CLIENT_IP_NOT_ALLOWED` を返すが、これは相手の不調ではなく**こちら側の設定**で、
+   * 直した瞬間に通るようになる。焼いてしまうと、正しく直した後も
+   * キャッシュが切れるまで「駄目だ」と言い続ける。
+   *
+   * 「期限切れでも捨てない」はあくまで**正しく取れた答え**の話であって、
+   * 自分の設定ミスの記録を抱え込む口実ではない。
+   */
+  neverCacheStatuses?: number[];
 }
 
 /** 名乗り。API 本体 (OpenSearch・openBD) はこれで普通に応じてくれる */
@@ -56,7 +77,8 @@ function keyOf(provider: string, url: string): string {
 }
 
 export async function cachedFetch(db: Db, cfg: Config, opts: FetchOptions): Promise<CachedResponse> {
-  const key = keyOf(opts.provider, opts.url);
+  const shelfUrl = opts.cacheUrl ?? opts.url;
+  const key = keyOf(opts.provider, shelfUrl);
   const hit = db.getCache(key);
   const fresh = hit && !opts.refresh && new Date(hit.expiresAt).getTime() > Date.now();
   if (hit && fresh) {
@@ -75,15 +97,17 @@ export async function cachedFetch(db: Db, cfg: Config, opts: FetchOptions): Prom
     const ttl = (opts.ttlDays ?? cfg.bib.ttlDays) * 86_400_000;
     // 失敗応答は短く持つ。相手の一時的な不調を 90 日抱えないため
     const keepMs = res.ok ? ttl : Math.min(ttl, 3_600_000);
-    db.putCache({
-      key,
-      provider: opts.provider,
-      url: opts.url,
-      status: res.status,
-      contentType: res.headers.get('content-type'),
-      body,
-      expiresAt: new Date(Date.now() + keepMs).toISOString(),
-    });
+    if (!opts.neverCacheStatuses?.includes(res.status)) {
+      db.putCache({
+        key,
+        provider: opts.provider,
+        url: shelfUrl,
+        status: res.status,
+        contentType: res.headers.get('content-type'),
+        body,
+        expiresAt: new Date(Date.now() + keepMs).toISOString(),
+      });
+    }
     return {
       status: res.status,
       body,

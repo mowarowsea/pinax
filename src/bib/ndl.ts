@@ -58,6 +58,47 @@ export function normalizeIsbn(raw: string | null | undefined): string | null {
   return s.length === 10 || s.length === 13 ? s : null;
 }
 
+/**
+ * NDL の `dcndl:volume` から巻数を取り出す。
+ *
+ * **素の数字だけを見ていると 3 割近く落ちる。** 手元のキャッシュ 627 応答 13016 件で
+ * 数えたところ、巻の記載がある 9940 件のうち **2654 件 (27%) が読めていなかった**
+ * (2026-09-14)。実際に出てくる形:
+ *
+ *   第3巻 (612)   vol.2 / VOL.2 / v.1 / Vol. 2 (450 前後)   第5集 (75)
+ *   3巻 (28)      no.4 (29)     #7 (27)     ２ (全角, 15)   其ノ3 (16)
+ *   6 (四月になれば彼女は)          ← 巻数のうしろに副題が付く
+ *   3 : pbk                      ← 装丁の別が付く
+ *
+ * 読めないと二重に損をする。**書影が貼れない**うえ、
+ * 「何巻まで出ているか」も分からなくなる。
+ *
+ * **数として読めないものは null のままにする。** `上` `下` `第2部[3]` のような
+ * 番号の体系が違うものを無理に数字へ倒すと、別の巻の表紙を貼ることになる。
+ */
+export function parseNdlVolume(raw: string | null | undefined): number | null {
+  if (raw === null || raw === undefined) return null;
+  let s = String(raw).normalize('NFKC').trim();
+  if (!s) return null;
+
+  // 「6 (四月になれば彼女は)」「3 : pbk」— 巻数のうしろに付く副題・装丁を落とす
+  s = s.replace(/\s*[(（][^)）]*[)）]\s*$/, '').replace(/\s*:.*$/, '').trim();
+
+  // 「[3]」— 角括弧でくくっただけの巻数
+  s = s.replace(/^\[\s*(\d{1,4})\s*\]$/, '$1');
+
+  // 「vol.2」「v.1」「no.4」「#7」「第3巻」「3巻」「第5集」「其ノ3」
+  const unit =
+    /^(?:vol(?:ume)?\.?|v\.|no\.?|#|第|其ノ|その)?\s*(\d{1,4})\s*(?:巻|集|号|話|冊)?$/i;
+  const m = s.match(unit);
+  // **作品ごとの独自の単位は数に倒さない。** 「fight 1」(ツマヌダ格闘街) や
+  // 「クリアカード編2」は、素の巻数と番号の線が別なので、混ぜると別の巻の表紙が貼られる
+  if (!m) return null;
+
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function parseNdlXml(xml: string): NdlRecord[] {
   const out: NdlRecord[] = [];
   for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
@@ -69,7 +110,7 @@ export function parseNdlXml(xml: string): NdlRecord[] {
     out.push({
       title: tag(item, 'dc:title') ?? tag(item, 'title') ?? '',
       volumeRaw,
-      volume: volumeRaw && /^\d{1,4}$/.test(volumeRaw) ? Number(volumeRaw) : null,
+      volume: parseNdlVolume(volumeRaw),
       creator: tag(item, 'dc:creator'),
       publisher: tag(item, 'dc:publisher'),
       date: tag(item, 'dcterms:issued') ?? tag(item, 'dc:date'),

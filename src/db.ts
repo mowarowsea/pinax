@@ -160,6 +160,8 @@ export interface SeriesRow {
   present: boolean;
   firstSeenAt: string;
   lastSeenAt: string;
+  /** 最後に外へ書誌を聞きに行った時刻。null なら一度も聞いていない */
+  enrichedAt: string | null;
 }
 
 export interface VolumeRow {
@@ -182,6 +184,20 @@ export class Db {
     this.raw = new DatabaseSync(path.join(dataDir, 'pinax.db'));
     this.raw.exec('PRAGMA journal_mode = WAL');
     this.raw.exec('PRAGMA foreign_keys = ON');
+    /**
+     * **書き手が 2 人いる前提で待つ。**
+     *
+     * サーバーが動いたまま `npm run covers` や `npm run scan` を回すことは普通にある。
+     * WAL は読みと書きは同時に通すが、書き手同士は直列で、既定では待たずに
+     * その場で SQLITE_BUSY を投げる。表紙を 1600 巻ぶん埋めている最中に
+     * スキャンの書き込みとかち合って落ちる、という壊れ方をする。待てば済む話なので待たせる。
+     *
+     * **スキャン 1 回ぶんより長く取ること。** scanner.ts は棚の突き合わせを
+     * 丸ごと 1 トランザクションで書く (途中で倒れた時に蔵書が半端な姿で残らないように)。
+     * 手元の 4945 ファイルでスキャンは 51 秒かかるので、15 秒では足りずに
+     * 実際 `database is locked` で落ちた (2026-09-14)。
+     */
+    this.raw.exec('PRAGMA busy_timeout = 90000');
     this.raw.exec(SCHEMA);
     this.migrate();
   }
@@ -198,8 +214,20 @@ export class Db {
     if (!cols('series').has('enriched_at')) {
       this.raw.exec('ALTER TABLE series ADD COLUMN enriched_at TEXT');
     }
+    // 巻ごとの表紙を最後に取りに行った時刻。**取れなかった時にも必ず入れる。**
+    // 入れないと、どこにも書影の無い巻を巡回が毎回選び直して先へ進まなくなる
+    // (series.enriched_at と同じ理屈)
+    if (!cols('bib').has('cover_tried_at')) {
+      this.raw.exec('ALTER TABLE bib ADD COLUMN cover_tried_at TEXT');
+    }
     // 列を足した後に張る。SCHEMA 側に置くと、既にある DB では列より先に走って失敗する
     this.raw.exec('CREATE INDEX IF NOT EXISTS series_enriched_idx ON series(enriched_at)');
+    this.raw.exec('CREATE INDEX IF NOT EXISTS bib_cover_tried_idx ON bib(cover_tried_at)');
+  }
+
+  /** この bib 行の表紙を取りに行った印。**失敗した時こそ押す** */
+  markCoverTried(bibId: number): void {
+    this.raw.prepare('UPDATE bib SET cover_tried_at = ? WHERE id = ?').run(now(), bibId);
   }
 
   /** 外へ聞きに行った印。取れたかどうかに関わらず押す */
@@ -448,6 +476,7 @@ function toSeries(r: Record<string, unknown>): SeriesRow {
     present: Number(r.present) === 1,
     firstSeenAt: String(r.first_seen_at),
     lastSeenAt: String(r.last_seen_at),
+    enrichedAt: (r.enriched_at as string | null) ?? null,
   };
 }
 

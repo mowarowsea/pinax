@@ -4,7 +4,7 @@ import { Db } from './db.js';
 import { buildServer } from './server.js';
 import { scanAll } from './scan/scanner.js';
 import { pushPending } from './notify.js';
-import { fillMissingCovers } from './bib/enrich.js';
+import { fillMissingCovers, fillVolumeCovers } from './bib/enrich.js';
 
 /**
  * 起動。
@@ -71,16 +71,38 @@ if (cfg.scan.intervalMinutes > 0) {
 
 /**
  * 表紙は少しずつ埋める。まとめて 500 作品ぶん取りに行くと相手に迷惑がかかるので、
- * 5 分ごとに数作品だけ進める。**進み具合は covers 表そのものが持つ**ので、
+ * 5 分ごとに少しだけ進める。**進み具合は covers 表そのものが持つ**ので、
  * 落ちても次の起動から続きになる。
+ *
+ * 2 段ある。順番に意味がある:
+ *  1. まだ表紙の無い**作品**を埋める (棚の一覧の見た目に直結する)
+ *  2. 作品の中で抜けている**巻**を埋める (作品を開いた時の歯抜けを埋める)
+ *
+ * 1 を先にするのは、棚に 1 枚も絵の無い作品が残っている状態の方が目に痛いから。
  */
+async function fillCovers(): Promise<void> {
+  const rs = await fillMissingCovers(db, cfg, { seriesLimit: 3, coverBudgetPerSeries: 20 });
+  const done = rs.filter((r) => r.coversWritten > 0);
+  if (done.length) log(`表紙(作品) ${done.map((r) => `${r.label}(${r.coversWritten}枚)`).join(', ')}`);
+
+  const authFailed = rs.find((r) => r.error?.includes('楽天'));
+  if (authFailed) {
+    log(`楽天に弾かれました: ${authFailed.error}`);
+    return;
+  }
+
+  const v = await fillVolumeCovers(db, cfg, { limit: 20 });
+  if (v.written) {
+    const by = Object.entries(v.byProvider).map(([k, n]) => `${k} ${n}`).join(' / ');
+    log(`表紙(巻) ${v.written}/${v.tried}枚 (${by})  作品 ${v.seriesTouched} 件を貼り直し`);
+  }
+  // 鍵か接続元 IP の問題。**黙って止まらせない** — 放っておくと
+  // 「なぜか表紙が増えない」とだけ見えて原因に辿り着けない
+  if (v.authError) log(`楽天に弾かれました: ${v.authError}`);
+}
+
 const coverTimer = setInterval(() => {
-  void fillMissingCovers(db, cfg, { seriesLimit: 3, coverBudgetPerSeries: 20 })
-    .then((rs) => {
-      const done = rs.filter((r) => r.coversWritten > 0);
-      if (done.length) log(`表紙 ${done.map((r) => `${r.label}(${r.coversWritten}枚)`).join(', ')}`);
-    })
-    .catch((e) => log('表紙の取得に失敗:', (e as Error).message));
+  void fillCovers().catch((e) => log('表紙の取得に失敗:', (e as Error).message));
 }, 5 * 60_000);
 
 const shutdown = async (sig: string): Promise<void> => {

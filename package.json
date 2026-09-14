@@ -13,7 +13,10 @@
     "scan": "node --no-warnings=ExperimentalWarning --import tsx src/cli-scan.ts",
     "test": "node --no-warnings=ExperimentalWarning --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "probe": "node --no-warnings=ExperimentalWarning --import tsx src/probe.ts"
+    "probe": "node --no-warnings=ExperimentalWarning --import tsx src/probe.ts",
+    "covers": "node --no-warnings=ExperimentalWarning --import tsx src/cli-covers.ts",
+    "whoami": "node --no-warnings=ExperimentalWarning --import tsx src/cli-whoami.ts",
+    "published": "node --no-warnings=ExperimentalWarning --import tsx src/cli-published.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.3",

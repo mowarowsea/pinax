@@ -152,6 +152,13 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .vol .dl:hover { border-color: var(--brand); color: var(--brand); }
 .vol.missing .cover { background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--line) 6px, var(--line) 7px); box-shadow: none; border: 1px dashed var(--gap); }
 .vol.missing .lbl { color: var(--gap); }
+/* 手元の最大巻より先に出ている巻。欠番 (持っている範囲の中の穴) とは別色にする */
+.vol.ahead .cover { background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--brand-soft) 6px, var(--brand-soft) 7px); box-shadow: none; border: 1px dashed var(--brand); }
+.vol.ahead .lbl { color: var(--brand); }
+.shelfline { margin: 10px 0 0; padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; background: var(--brand-soft); color: var(--brand); }
+.shelfline.quiet { background: transparent; border: 1px solid var(--line); color: var(--ink-3); font-weight: 500; }
+.shelfline small { display: block; font-weight: 400; font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+.badge.ahead { background: var(--brand); }
 .loose { font-size: 12px; color: var(--ink-2); display: grid; gap: 4px; }
 .loose a { text-decoration: none; }
 
@@ -181,6 +188,7 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
     <input class="search" id="q" type="search" placeholder="作品名・著者で探す" autocomplete="off">
     <div class="chips">
       <button class="chip" id="f-gaps" aria-pressed="false">欠番あり</button>
+      <button class="chip" id="f-behind" aria-pressed="false">続きが出ている</button>
       <button class="chip" id="f-done" aria-pressed="false">完結</button>
       <button class="chip" id="f-ongoing" aria-pressed="false">継続中</button>
       <button class="chip" id="f-nocover" aria-pressed="false">表紙なし</button>
@@ -232,7 +240,7 @@ async function api(path, opts) {
   return body;
 }
 
-const state = { q: '', gaps: false, completed: undefined, needsCover: false, sort: 'title' };
+const state = { q: '', gaps: false, behind: false, completed: undefined, needsCover: false, sort: 'title' };
 
 // ---- 棚 ----------------------------------------------------------------
 
@@ -246,6 +254,8 @@ function cardHtml(s) {
   const h = s.holdings[0];
   const badges = [];
   if (s.hasGap) badges.push(`<span class="badge gap">欠番 ${s.holdings.reduce((n, x) => n + x.missing.length, 0)}</span>`);
+  // 手元の最大巻より先が出ている。**欠番とは意味が違う** ので別に出す
+  if (s.shelf && s.shelf.aheadCount) badges.push(`<span class="badge ahead">+${s.shelf.aheadCount}</span>`);
   if (s.completed) badges.push('<span class="badge done">完</span>');
   const range = h ? `1〜${h.max}${h.unit}` : (s.looseFiles ? `${s.looseFiles}点` : '');
   return `<button class="card" data-id="${s.id}">
@@ -260,6 +270,7 @@ async function loadGrid() {
   const p = new URLSearchParams({ sort: state.sort, limit: '500' });
   if (state.q) p.set('q', state.q);
   if (state.gaps) p.set('gaps', '1');
+  if (state.behind) p.set('behind', '1');
   if (state.completed !== undefined) p.set('completed', state.completed ? '1' : '0');
   if (state.needsCover) p.set('needsCover', '1');
 
@@ -267,9 +278,11 @@ async function loadGrid() {
   $('grid').innerHTML = items.map(cardHtml).join('');
   $('empty').hidden = items.length > 0;
   const shown = items.length;
-  $('countline').textContent = state.gaps
-    ? `欠番のある作品 ${shown} 件`
-    : `${shown} 件を表示${total > shown ? ` (該当 ${total} 件)` : ''}`;
+  $('countline').textContent = state.behind
+    ? `続きが出ている作品 ${shown} 件`
+    : state.gaps
+      ? `欠番のある作品 ${shown} 件`
+      : `${shown} 件を表示${total > shown ? ` (該当 ${total} 件)` : ''}`;
 }
 
 // ---- 詳細 ---------------------------------------------------------------
@@ -290,12 +303,40 @@ function volHtml(v) {
   </div>`;
 }
 
-function missingVolHtml(n, unit) {
-  return `<div class="vol missing">
+function missingVolHtml(n, unit, kind) {
+  // kind: 'gap' = 持っている範囲の中の穴 / 'ahead' = 手元の最大巻より先に出ている巻
+  return `<div class="vol missing ${kind === 'ahead' ? 'ahead' : ''}">
     <span class="cover"></span>
     <span class="lbl">第${String(n).padStart(2, '0')}${unit}</span>
-    <span class="sz">未所持</span>
+    <span class="sz">${kind === 'ahead' ? '未購入' : '未所持'}</span>
   </div>`;
+}
+
+/**
+ * 発行状況の一行。**「たぶん完結」とは書かない。**
+ * 外の書誌に完結の情報が無いことは実測済みで、機械が断定して外すと買い逃しになる。
+ * 分かっていることだけを出して、判断は人に委ねる。
+ */
+function shelfLineHtml(d) {
+  const sh = d.shelf;
+  const pub = d.published;
+  if (!sh) return '';
+  const src = pub && pub.providers && pub.providers.length ? pub.providers.join('・').toUpperCase() : '書誌';
+  if (sh.status === 'unknown') {
+    return `<div class="shelfline quiet">発行状況は未確認<small>「書誌と表紙を取り直す」で外に聞きます</small></div>`;
+  }
+  if (sh.status === 'behind') {
+    return `<div class="shelfline">続きが出ています — 第${sh.ownedMax + 1}〜${sh.publishedMax}巻が未購入
+      <small>${esc(src)} で確認できた範囲です。これより先が出ている可能性もあります</small></div>`;
+  }
+  if (sh.status === 'owner-completed') {
+    return `<div class="shelfline quiet">完結（フォルダの (完) による）${
+      sh.missingCount ? ` — 未所持 ${sh.missingCount}巻` : ' — 揃っています'
+    }<small>${esc(src)} で第${sh.publishedMax ?? '?'}巻まで確認</small></div>`;
+  }
+  return `<div class="shelfline quiet">${
+    sh.latestYear ? `${sh.latestYear}年の第${sh.publishedMax}巻` : `第${sh.publishedMax}巻`
+  }まで確認、それ以降は不明<small>完結したのか、書誌がまだ新刊を知らないのかは区別できません</small></div>`;
 }
 
 function detailHtml(d) {
@@ -311,10 +352,21 @@ function detailHtml(d) {
   for (const v of d.volumes) if (!main || v.unit === main.unit) owned.set(v.volumeFrom, v);
   const line = [];
   if (main) {
-    for (let i = 1; i <= main.max; i++) {
+    /**
+     * **手元の最大巻で数直線を止めない。** 外の書誌が知っている巻まで伸ばす。
+     * 止めてしまうと「1〜10巻が揃っている」ように見えて、19巻まで出ていることに
+     * 一生気付けない — 蔵書管理として一番まずい見え方になる。
+     */
+    const pub = d.published ?? { max: null, known: [] };
+    const knownSet = new Set(pub.known ?? []);
+    const last = main.unit === '巻' && pub.max ? Math.max(main.max, pub.max) : main.max;
+    for (let i = 1; i <= last; i++) {
       const v = owned.get(i);
-      if (v) line.push(volHtml(v));
-      else if (!d.volumes.some((x) => x.volumeFrom <= i && x.volumeTo >= i)) line.push(missingVolHtml(i, main.unit));
+      if (v) { line.push(volHtml(v)); continue; }
+      if (d.volumes.some((x) => x.volumeFrom <= i && x.volumeTo >= i)) continue;
+      // 手元の最大巻より先は「未購入」。書誌が知らない番号は出さない (あるとは限らない)
+      if (i > main.max) { if (knownSet.has(i)) line.push(missingVolHtml(i, main.unit, 'ahead')); }
+      else line.push(missingVolHtml(i, main.unit, 'gap'));
     }
     // 範囲でしか持っていない巻 (合本) は数直線に乗らないので後ろに足す
     for (const v of d.volumes) if (v.volumeFrom !== v.volumeTo) line.push(volHtml(v));
@@ -335,6 +387,7 @@ function detailHtml(d) {
         <dt>フォルダ</dt><dd>${esc(d.folder)}</dd>
       </dl>
       ${gapText ? `<div class="gapline">欠番 ${esc(gapText)}</div>` : ''}
+      ${shelfLineHtml(d)}
       <div class="d-actions">
         <button class="btn" id="enrich" data-id="${d.id}">書誌と表紙を取り直す</button>
       </div>
@@ -437,6 +490,7 @@ const toggle = (id, apply) => {
   });
 };
 toggle('f-gaps', (on) => { state.gaps = on; });
+toggle('f-behind', (on) => { state.behind = on; });
 toggle('f-nocover', (on) => { state.needsCover = on; });
 toggle('f-done', (on) => {
   state.completed = on ? true : undefined;
