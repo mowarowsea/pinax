@@ -49,7 +49,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
 
   // ---- 死活監視 (LocalLauncher がここを見る) ------------------------------
 
-  app.get('/api/health', async (req) => {
+  app.get('/api/health', async () => {
     const counts = db.raw
       .prepare(
         `SELECT (SELECT COUNT(*) FROM series WHERE present = 1) AS series,
@@ -63,9 +63,9 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
       ok: true,
       name: 'pinax',
       roots: cfg.roots.map((r) => ({ id: r.id, label: r.label, kind: r.kind, path: r.path })),
-      // エクスプローラを開けるかどうかは**相手ごとに違う** (reveal.ts の頭)。
-      // 画面はこれを見てボタンを出すか決める
-      reveal: revealAbility(req.ip),
+      // エクスプローラを開けるか。**ここは pinax 自身の話** (Windows で動いているか) で、
+      // 見ている端末が PC かどうかは画面側がメディアクエリで決める (reveal.ts の頭)
+      reveal: revealAbility(),
       counts,
       lastScans: db.lastScans(cfg.roots.length || 1),
       cache: db.cacheStats(),
@@ -139,13 +139,14 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   );
 
   /**
-   * 作品のフォルダをエクスプローラで開く。**PC 限定** (reveal.ts の頭)。
+   * 作品のフォルダをエクスプローラで開く。開くのは **pinax が動いている PC** の側。
+   * 見ている端末が PC かどうかは画面がメディアクエリで決める (reveal.ts の頭)。
    * `fileId` を添えるとそのファイルを選択した状態で開くので、
    * 重複や巻数不明のファイルをそのまま手で片付けられる。
    */
   app.post<{ Params: { id: string }; Body: { fileId?: number } }>('/api/series/:id/reveal', async (req) => {
-    const can = revealAbility(req.ip);
-    if (!can.available) throw new HttpError(403, can.reason ?? 'この操作はできません');
+    const can = revealAbility();
+    if (!can.available) throw new HttpError(501, can.reason ?? 'この操作はできません');
 
     const id = Number(req.params.id);
     const series = db.getSeries(id);

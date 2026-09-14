@@ -1,22 +1,27 @@
 import { spawn } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 
 /**
  * 蔵書のフォルダをエクスプローラで開く。
  *
  * **これだけは画面を見ている相手ではなく、pinax が動いている PC の側で起きる。**
- * pinax は Tailscale 越しにスマホからも開くので、ここを無条件に許すと
- * 寝室から押したボタンで居間の PC にウィンドウが積み上がる。役に立たないどころか、
- * 押した本人には何が起きたのか見えない。だから 2 つ揃った時だけ通す:
+ * だから「誰に見せるか」は考える必要があるが、**接続元アドレスでは判定しない**。
  *
- *   1. pinax が Windows で動いている (エクスプローラがある)
- *   2. **同じ機械から見ている** — 画面と PC が同一なら、開いたウィンドウは押した人に見える
+ * 一度そうしてみて外れた (2026-09-14)。手元は PC からも Tailscale の口
+ * (`http://100.x.x.x:3838/`) を通して見ているので、接続元が pinax 自身の
+ * アドレスになるとは限らず、**PC で見ているのにボタンが出ない**。
+ * 「LAN の中か」でも同じで、経路の都合を機械が読み切れない。
  *
- * 2 の判定は接続元アドレスでやる。ループバック (127.0.0.1 / ::1) か、
- * この機械自身が持っているアドレスなら同じ機械。Tailscale の IP で
- * `http://100.x.x.x:3838/` を自分の PC のブラウザから開いた場合も、
- * 接続元はその機械自身のアドレスになるのでちゃんと通る。
+ * 代わりに 2 つで決める:
+ *
+ *   サーバー側 … Windows で動いているか (エクスプローラがあるか)。ここだけ
+ *   画面側     … `(hover: hover) and (pointer: fine)` — **マウスのある端末か**。
+ *                画面幅ではなく入力装置で見る。横向きのタブレットは幅では PC と区別できない
+ *
+ * 判定を画面へ預けるので、スマホから叩けば口そのものは通る。LAN / Tailscale の中でしか
+ * 開かないサービスで、起きることは「PC にウィンドウが 1 枚開く」だけなので、
+ * ボタンが出ない不便の方が重いという判断 (本人の指定)。
+ * **パスの検証 (`resolveInsideRoot`) は落とさない** — そちらは実害の話。
  */
 
 export interface RevealAbility {
@@ -25,39 +30,10 @@ export interface RevealAbility {
   reason: string | null;
 }
 
-/** この機械が持っているアドレスを全部集める (IPv6 のゾーン ID は落とす) */
-function ownAddresses(): Set<string> {
-  const out = new Set<string>(['127.0.0.1', '::1']);
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const ni of list ?? []) out.add(normalizeAddress(ni.address));
-  }
-  return out;
-}
-
-/** `::ffff:127.0.0.1` や `fe80::1%eth0` を素の形に均す */
-export function normalizeAddress(raw: string | undefined | null): string {
-  let a = String(raw ?? '').trim().toLowerCase();
-  const zone = a.indexOf('%');
-  if (zone >= 0) a = a.slice(0, zone);
-  // IPv4-mapped IPv6。Node は `::ffff:192.168.1.5` の形で渡してくる
-  if (a.startsWith('::ffff:')) a = a.slice('::ffff:'.length);
-  return a;
-}
-
-/** 画面を見ている相手と pinax が同じ機械にいるか */
-export function isSameMachine(remoteAddress: string | undefined | null): boolean {
-  const a = normalizeAddress(remoteAddress);
-  if (!a) return false;
-  return ownAddresses().has(a);
-}
-
-/** 今この相手にエクスプローラを開かせてよいか */
-export function revealAbility(remoteAddress: string | undefined | null): RevealAbility {
+/** この pinax でエクスプローラを開けるか。相手ではなく**自分**の話 */
+export function revealAbility(): RevealAbility {
   if (process.platform !== 'win32') {
     return { available: false, reason: 'pinax が Windows で動いていません' };
-  }
-  if (!isSameMachine(remoteAddress)) {
-    return { available: false, reason: 'pinax が動いている PC 以外からは開けません' };
   }
   return { available: true, reason: null };
 }
