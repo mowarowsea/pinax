@@ -379,6 +379,7 @@ button.cover { border: 0; padding: 0; font: inherit; }
       <option value="author">著者順</option>
       <option value="volumes">冊数順</option>
       <option value="added">登録が新しい順</option>
+      <option value="updated">更新が新しい順</option>
     </select>
   </div>
 </header>
@@ -861,7 +862,7 @@ function pkGroupHtml(g) {
   const vols = g.volumeMax
     ? `${volLabel(g.volumes[0])}〜${volLabel(g.volumeMax)} (${g.volumes.length}冊)`
     : '巻の並びなし';
-  const meta = [vols, years, g.publisher, `${g.count}件`].filter(Boolean).join(' · ');
+  const meta = [g.author, years, vols, g.publisher, `${g.count}件`].filter(Boolean).join(' · ');
   const acts = [];
   // 巻を指定して開いている時は「シリーズごと乗り換える」を出さない。
   // 押したつもりの無い作品全体の貼り直しが走るのは驚きが大きい
@@ -884,17 +885,17 @@ function pkGroupHtml(g) {
 }
 
 function renderPicker() {
-  const forWhat = picker.volume === null
-    ? '手元の棚に合う系列を選ぶと、書誌と表紙をまとめて貼り直します'
-    : `${volLabel(picker.volume)}の表紙だけを差し替えます`;
+  // 巻を指定して来た時だけ、何をしに来たのかを出す。**それ以外の説明書きは置かない** —
+  // 並んでいるものを見れば分かることを毎回読ませない
+  const forWhat = picker.volume === null ? '' : `${volLabel(picker.volume)}の表紙だけを差し替えます`;
   $('detail').innerHTML = `
     <div class="pk-head">
       <button class="btn" id="pk-back">← 作品へ戻る</button>
-      <span class="pk-for">${forWhat}</span>
+      ${forWhat ? `<span class="pk-for">${forWhat}</span>` : ''}
     </div>
     <div class="pk-form">
       <input id="pk-q" value="${esc(picker.q)}" placeholder="作品名" autocomplete="off">
-      <input id="pk-author" value="${esc(picker.author)}" placeholder="著者 (NDL に添える)" autocomplete="off">
+      <input id="pk-author" value="${esc(picker.author)}" placeholder="著者" autocomplete="off">
       <select class="sort" id="pk-provider">
         <option value="all">NDL + 楽天</option>
         <option value="ndl">NDL だけ</option>
@@ -913,8 +914,9 @@ async function openPicker(volume = null) {
   if (!d) return;
   picker.seriesId = d.id;
   picker.volume = volume;
-  // 前に選んだ時の検索語があればそれを出す。無ければ棚の作品名と著者
-  picker.q = (d.pick && d.pick.queryTitle) || d.title;
+  // 前に選んだ時の検索語があればそれを出す。無ければ棚の作品名と著者。
+  // **空で選んだ人は空のまま出す** (著者だけで引き当てた作品がある)
+  picker.q = d.pick ? d.pick.queryTitle : d.title;
   picker.author = d.pick ? (d.pick.queryAuthor || '') : (d.author || '');
   picker.provider = 'all';
   picker.groups = [];
@@ -944,10 +946,11 @@ async function runPickerSearch(refresh) {
     const openHead = picker.volume !== null || r.groups.length === 1;
     picker.open = new Set(openHead && head ? [head.key] : chosen ? [chosen.key] : []);
 
+    // **うまくいった時は何も言わない。** 言うのは相手が落ちていた時と、0 件だった時だけ
     const errs = (r.errors ?? []).map((e) => `${e.provider}: ${e.message}`).join(' / ');
     picker.warn = Boolean(errs);
     picker.note = r.groups.length
-      ? `${r.groups.length} 系列が見つかりました。手元の棚と中身が合っているものを選んでください${errs ? ` — ${errs}` : ''}`
+      ? errs
       : `候補が見つかりませんでした${errs ? ` — ${errs}` : ''}`;
     picker.body = r.groups.length
       ? r.groups.map(pkGroupHtml).join('')

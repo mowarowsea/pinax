@@ -59,6 +59,11 @@ export interface CandidateGroup {
   providers: CandidateProvider[];
   /** 見出しに使う書名 */
   title: string;
+  /**
+   * 束の著者。**提供元の表記のまま**出す (NDL は「内藤, 泰弘」、楽天は「内藤泰弘」)。
+   * 著者だけで検索した時に、同じ書名の別作品を見分ける手がかりになる
+   */
+  author: string | null;
   count: number;
   /** 巻として読めたもの (昇順) */
   volumes: number[];
@@ -196,6 +201,16 @@ function byVolumeThenDate(a: Candidate, b: Candidate): number {
   return dateKeyOf(a.date) - dateKeyOf(b.date) || PROVIDER_RANK[a.provider] - PROVIDER_RANK[b.provider];
 }
 
+/** 一番多く現れた書き方を採る。同数なら短い方 (余計な飾りの付いていない方) */
+function majority(values: (string | null)[]): string | null {
+  const tally = new Map<string, number>();
+  for (const v of values) {
+    const s = String(v ?? '').trim();
+    if (s) tally.set(s, (tally.get(s) ?? 0) + 1);
+  }
+  return [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)[0]?.[0] ?? null;
+}
+
 function toGroup(key: string, items: Candidate[]): CandidateGroup {
   const sorted = [...items].sort(byVolumeThenDate);
   const volumes = [...new Set(sorted.map((x) => x.volume).filter((v): v is number => v !== null))]
@@ -204,9 +219,9 @@ function toGroup(key: string, items: Candidate[]): CandidateGroup {
 
   // 見出しは**一番多く現れた書き方**を採る。`血界戦線Back 2 Back` と `血界戦線back 2 back`
   // のように大小や空白だけ違う版が混ざるので、多数決で落ち着かせる
-  const tally = new Map<string, number>();
-  for (const x of sorted) tally.set(x.baseTitle, (tally.get(x.baseTitle) ?? 0) + 1);
-  const title = [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)[0]?.[0] ?? '';
+  const title = majority(sorted.map((x) => x.baseTitle)) ?? '';
+  // 著者も同じく多数決。巻によって「原作」「作画」の片方しか載らないことがある
+  const author = majority(sorted.map((x) => x.author));
 
   return {
     key,
@@ -214,6 +229,7 @@ function toGroup(key: string, items: Candidate[]): CandidateGroup {
       (a, b) => PROVIDER_RANK[a] - PROVIDER_RANK[b]
     ),
     title,
+    author,
     count: sorted.length,
     volumes,
     volumeMax: volumes.length ? volumes[volumes.length - 1] : null,

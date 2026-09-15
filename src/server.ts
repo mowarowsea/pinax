@@ -102,7 +102,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
         : qs.issues === '1' || qs.issues === 'any' || qs.issues === 'true'
           ? 'any'
           : undefined,
-      sort: (qs.sort as 'title' | 'author' | 'added' | 'volumes' | undefined) ?? 'title',
+      sort: (qs.sort as 'title' | 'author' | 'added' | 'volumes' | 'updated' | undefined) ?? 'title',
       limit: qs.limit ? Number(qs.limit) : undefined,
       offset: qs.offset ? Number(qs.offset) : undefined,
     });
@@ -288,11 +288,16 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
 
     const p = req.query.provider;
     const provider: CandidateProvider | 'all' = p === 'ndl' || p === 'rakuten' ? p : 'all';
+    // **空文字は「その欄なし」として通す。** 書名を消して著者だけで引きたい時も、
+    // 著者を消して書名だけで引きたい時もあるので、未指定 (undefined) と区別する。
+    // 未指定の時だけ棚の値を当てる
+    const title = req.query.q === undefined ? series.title : req.query.q.trim();
+    const author = req.query.author === undefined ? series.author : req.query.author.trim() || null;
+    if (!title && !author) throw new HttpError(400, '作品名か著者のどちらかを入れてください');
+
     const found = await searchCandidates(db, cfg, {
-      title: req.query.q?.trim() || series.title,
-      // **空文字を「著者なし」として通す。** 著者を消して引き直したい時があるので、
-      // 未指定 (undefined) と区別する
-      author: req.query.author === undefined ? series.author : req.query.author.trim() || null,
+      title,
+      author,
       provider,
       refresh: req.query.refresh === '1',
     });

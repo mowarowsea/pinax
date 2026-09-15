@@ -49,8 +49,11 @@ export interface SearchResult {
  * 書影の候補を外に聞く。
  *
  * NDL には著者を添える (ndl.ts の頭: 添えないと CD やアンソロジーが混ざる)。
- * **楽天には著者を渡さない** (rakuten.ts の頭: 渡すと 0 件になる)。
- * 提供元ごとの作法はアダプタが知っているので、ここでは呼び分けるだけにする。
+ * **書名があるうちは楽天に著者を渡さない** — 渡すと 0 件になる (rakuten.ts の頭)。
+ *
+ * **作品名を空にして著者だけで引ける。** 棚のフォルダ名が実際の書名と違っていて
+ * 何を入れれば当たるのか分からない時に、作者の著作を並べて選ぶ道が要る。
+ * この時は楽天にも著者を渡す (渡さないと条件が 1 つも無くなる)。
  */
 export async function searchCandidates(db: Db, cfg: Config, q: SearchQuery): Promise<SearchResult> {
   const title = String(q.title ?? '').trim();
@@ -59,6 +62,9 @@ export async function searchCandidates(db: Db, cfg: Config, q: SearchQuery): Pro
   const asked: CandidateProvider[] = [];
   const errors: SearchResult['errors'] = [];
   const items: Candidate[] = [];
+
+  // 条件が 1 つも無い問い合わせは外へ出さない。相手の全件が返ってくるだけ
+  if (!title && !author) return { title, author, groups: [], asked, errors };
 
   if (want === 'all' || want === 'ndl') {
     asked.push('ndl');
@@ -73,7 +79,12 @@ export async function searchCandidates(db: Db, cfg: Config, q: SearchQuery): Pro
   if ((want === 'all' || want === 'rakuten') && rakutenReady(cfg)) {
     asked.push('rakuten');
     try {
-      const found = await searchRakuten(db, cfg, { title, hits: 30, refresh: q.refresh });
+      const found = await searchRakuten(db, cfg, {
+        title: title || undefined,
+        author: title ? undefined : author ?? undefined,
+        hits: 30,
+        refresh: q.refresh,
+      });
       for (const r of found.records) items.push(rakutenCandidate(r, cfg.bib.rakuten.imageSize));
     } catch (e) {
       const msg = e instanceof RakutenAuthError ? `${e.message} (${e.detail})` : (e as Error).message;

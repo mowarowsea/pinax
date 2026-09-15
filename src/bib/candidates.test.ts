@@ -136,3 +136,14 @@ test('副題が複数の冊に出るなら別シリーズとして残す', () =>
   assert.equal(groups.length, 2);
   assert.ok(groups.some((g) => g.title === 'ふしぎ遊戯 : 玄武開伝'));
 });
+
+test('束の著者は多数決で 1 つに決める', () => {
+  // 巻によって著者の書き方が揺れる。**著者だけで引いた時の見分けに使う**ので、
+  // 一番多く出てきた書き方に落ち着かせる
+  const groups = groupCandidates([
+    ...KEKKAI,
+    { ...KEKKAI[2], provider: 'rakuten' as const, title: '血界戦線（2）', author: '内藤泰弘' },
+  ]);
+  const plain = groups.find((g) => g.title === '血界戦線')!;
+  assert.equal(plain.author, '内藤, 泰弘');
+});

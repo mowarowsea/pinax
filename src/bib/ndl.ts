@@ -170,8 +170,11 @@ export interface NdlSearchResult {
 async function once(
   db: Db, cfg: Config, title: string, creator: string | null, count: number, refresh?: boolean
 ): Promise<{ records: NdlRecord[]; cached: boolean; stale: boolean }> {
-  const params = new URLSearchParams({ title, mediatype: 'books', cnt: String(Math.min(count, 500)) });
-  // 著者は「あれば足す」。空文字を送ると 0 件になる
+  const params = new URLSearchParams({ mediatype: 'books', cnt: String(Math.min(count, 500)) });
+  // 書名も著者も「あれば足す」。**空文字を送ると 0 件になる** ので、消すなら欄ごと消す。
+  // 著者だけで引くのは NDL が通す (2026-09-15 に確認) — 人が作品名を消して
+  // 「この作者の本を全部見せて」と引く道がここ
+  if (title) params.set('title', title);
   if (creator) params.set('creator', creator);
   const res = await cachedFetch(db, cfg, { provider: 'ndl', url: `${ENDPOINT}?${params}`, refresh });
   if (res.status !== 200) return { records: [], cached: res.cached, stale: res.stale };
@@ -203,7 +206,9 @@ export async function searchNdl(db: Db, cfg: Config, q: NdlQuery): Promise<NdlSe
     if (score >= 2) return best;
   }
 
-  if (bestScore <= 0) {
+  // **書名が空なら著者無しの当てはやらない。** 条件が 1 つも無い問い合わせになって、
+  // NDL の図書がまるごと返ってくる
+  if (bestScore <= 0 && q.title) {
     const r = await once(db, cfg, q.title, null, count, q.refresh);
     best.attempts++;
     if (r.records.length) best = { ...r, usedCreator: null, attempts: best.attempts };

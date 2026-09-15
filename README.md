@@ -83,6 +83,7 @@ pinax が読めるのはこの形:
 | ヘッダ | 作品数・冊数・焼いた表紙の数。棚の読み直し、表紙の取得を手で進める |
 | お知らせ | 新しく入った作品・増えた巻・完結。既読にできる |
 | 絞り込み | 作品名/著者の検索、**欠番あり**、**続きが出ている**、完結 / 継続中、表紙なし、**要確認** |
+| 並び替え | 作品名 / 著者 / 冊数 / 登録が新しい順 / **更新が新しい順** (最後に巻が増えた日) |
 | 作品を開く | 巻を数直線に並べる。**持っていない巻は破線の枠で穴として見える**。各巻から保存 |
 | 作品の中 | 完結済みのスイッチ。**表紙を探して選ぶ**。**エクスプローラでフォルダを開く** (マウスのある端末だけ) |
 
@@ -131,6 +132,7 @@ pinax が読めるのはこの形:
 | できること | どうなるか |
 |---|---|
 | 検索語を打ち直す | 作品名と著者を変えて聞き直す。提供元も NDL / 楽天 / 両方から選べる |
+| **作品名を空にする** | 著者だけで引く。棚のフォルダ名が実際の書名と違う作品を、著作から探せる |
 | **このシリーズにする** | その系列を正として**書誌と表紙をまとめて貼り直す**。選択は残る |
 | **第nn巻に使う** | その 1 巻の絵だけ差し替える。書誌は触らない |
 | **代表にする** | 棚に並ぶ 1 枚を差し替える |
@@ -384,6 +386,8 @@ GET /api/bib/proxy?url=<許可した提供元の URL>     生の中継 (要ト�
 GET    /api/health                      死活監視 (LocalLauncher 用)。件数とキャッシュの様子も返す
 GET    /api/series?q=&gaps=&behind=&missing=&completed=&needsCover=&issues=&sort=&limit=&offset=
                                         issues=1|dup|loose で要確認の作品に絞る (総数にも効く)
+                                        sort=title|author|volumes|added|updated
+                                        updated は「最後に巻が増えた日」の降順 (added は作品の登録日)
 GET    /api/missing?kind=ahead|gap|all   持っていない巻の一覧 (ahead=買い逃し / gap=取りこぼし)
 GET    /api/series/:id                  巻・ファイル・書誌つきの詳細
 POST   /api/series/:id/enrich           書誌と表紙を取り直す
@@ -398,6 +402,8 @@ POST   /api/covers/fill                 表紙の無い「作品」を少しず�
 POST   /api/covers/fill-volumes         作品の中で抜けている「巻」を埋める (楽天の鍵が要る)
 GET    /api/series/:id/cover-search?q=&author=&provider=all|ndl|rakuten
                                         書影の候補を探し、シリーズの束にまとめて返す
+                                        q / author は空文字で「その欄なし」。省くと棚の値を当てる
+                                        (両方空は 400。作品名なしで著者だけ、はできる)
 POST   /api/series/:id/cover-pick       系列を選ぶ ({ scope, groupKey, title, queryTitle, queryAuthor })
                                         選んだ束で書誌と表紙を貼り直す
 DELETE /api/series/:id/cover-pick       選択を外して自動へ戻す (表紙は消さない)

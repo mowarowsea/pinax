@@ -75,6 +75,12 @@ export interface SeriesSummary {
   coverUrl: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
+  /**
+   * **最後に巻が 1 つ増えた時刻。** 作品が棚に載った時刻 (`firstSeenAt`) とは別物で、
+   * 続きを買い足した作品が上に来るのはこちら。
+   * 巻として読めたものが 1 つも無ければ作品の初出に落とす
+   */
+  volumeAddedAt: string;
 }
 
 /**
@@ -108,6 +114,17 @@ const dupFilesSql = (seriesRef: string): string => `(SELECT COALESCE(SUM(n - 1),
 
 const looseFilesSql = (seriesRef: string): string =>
   `(SELECT COUNT(*) FROM files f WHERE f.series_id = ${seriesRef} AND f.present = 1 AND f.volume_id IS NULL)`;
+
+/**
+ * 最後に巻が 1 つ増えた時刻。
+ *
+ * 見るのは `volumes.first_seen_at` — **その巻が棚に初めて現れた時刻**。
+ * ファイルの mtime ではない。古い巻を後から買い足しても mtime は昔の日付のままで、
+ * 「続きを足した作品」を上に出すという目的に使えない。
+ * 巻が 1 つも無ければ null になるので、呼ぶ側で作品の初出に落とす
+ */
+const volumeAddedAtSql = (seriesRef: string): string =>
+  `(SELECT MAX(v.first_seen_at) FROM volumes v WHERE v.series_id = ${seriesRef} AND v.present = 1)`;
 
 function toIssues(duplicateVolumes: number, duplicateFiles: number, unreadableFiles: number): SeriesIssues {
   return {
@@ -170,7 +187,7 @@ export interface ListOptions {
    *   any   … どちらか
    */
   issues?: 'any' | 'dup' | 'loose';
-  sort?: 'title' | 'author' | 'added' | 'volumes';
+  sort?: 'title' | 'author' | 'added' | 'volumes' | 'updated';
   limit?: number;
   offset?: number;
 }
@@ -222,6 +239,7 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
     author: 's.author COLLATE NOCASE ASC, s.title COLLATE NOCASE ASC',
     added: 's.first_seen_at DESC, s.id DESC',
     volumes: 'file_count DESC',
+    updated: 'volume_added_at DESC, s.id DESC',
   }[opts.sort ?? 'title'];
 
   const limit = Math.min(opts.limit ?? 60, 500);
@@ -235,7 +253,8 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
               ${looseFilesSql('s.id')} AS loose,
               ${dupVolumesSql('s.id')} AS dup_volumes,
               ${dupFilesSql('s.id')} AS dup_files,
-              (SELECT c.id FROM covers c WHERE c.series_id = s.id AND c.volume_no IS NULL) AS cover_id
+              (SELECT c.id FROM covers c WHERE c.series_id = s.id AND c.volume_no IS NULL) AS cover_id,
+              COALESCE(${volumeAddedAtSql('s.id')}, s.first_seen_at) AS volume_added_at
          FROM series s ${clause}
         ORDER BY ${order} LIMIT ? OFFSET ?`
     )
@@ -269,6 +288,7 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
       coverUrl: r.cover_id ? `/api/covers/${Number(r.cover_id)}` : null,
       firstSeenAt: String(r.first_seen_at),
       lastSeenAt: String(r.last_seen_at),
+      volumeAddedAt: String(r.volume_added_at ?? r.first_seen_at),
     } satisfies SeriesSummary;
   });
 
@@ -400,6 +420,9 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
   const cover = db.raw
     .prepare('SELECT id FROM covers WHERE series_id = ? AND volume_no IS NULL')
     .get(s.id) as { id: number } | undefined;
+  const added = db.raw
+    .prepare(`SELECT ${volumeAddedAtSql('?')} AS at`)
+    .get(s.id) as { at: string | null };
   const holdings = holdingsOf(db.listVolumes(s.id));
   const pub = publishedOf(db, s.id, holdings, s.enrichedAt);
   return {
@@ -424,6 +447,7 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
     coverUrl: cover ? `/api/covers/${cover.id}` : null,
     firstSeenAt: s.firstSeenAt,
     lastSeenAt: s.lastSeenAt,
+    volumeAddedAt: added.at ?? s.firstSeenAt,
   };
 }
 

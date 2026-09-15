@@ -234,3 +234,46 @@ test('要確認の絞り込みは総数にも効く', () => {
   assert.ok(loose.items.every((i) => i.issues.unreadableFiles > 0));
   assert.ok(dup.total < any.total && loose.total < any.total, '重複と巻数不明が同じ集合になっている');
 });
+
+// ---- 並び ------------------------------------------------------------------
+
+test('更新が新しい順は「最後に巻が増えた日」で並ぶ', () => {
+  /**
+   * **「登録が新しい順」とは別物。** 何年も前から棚にある作品でも、
+   * 続きを買い足した日が新しければこちらでは上に来る。
+   * この 2 つが同じ並びになるなら、片方は要らない
+   */
+  const early = seed('[あ] 昔から棚にある作品', '昔から棚にある作品', 'あ', [[1, 1, '巻'], [2, 2, '巻']]);
+  const late = seed('[い] 昨日入れた作品', '昨日入れた作品', 'い', [[1, 1, '巻']]);
+  const at = (t: string, id: number) =>
+    db.raw.prepare('UPDATE series SET first_seen_at = ? WHERE id = ?').run(t, id);
+  const volAt = (t: string, id: number, from: number) =>
+    db.raw.prepare('UPDATE volumes SET first_seen_at = ? WHERE series_id = ? AND volume_from = ?').run(t, id, from);
+
+  at('2020-01-01T00:00:00.000Z', early);
+  at('2026-09-01T00:00:00.000Z', late);
+  volAt('2020-01-01T00:00:00.000Z', early, 1);
+  volAt('2026-09-14T00:00:00.000Z', early, 2); // 昨日、続きが出て買い足した
+  volAt('2026-09-01T00:00:00.000Z', late, 1);
+
+  const pos = (r: ReturnType<typeof listSeries>, id: number) => r.items.findIndex((i) => i.id === id);
+
+  const added = listSeries(db, { sort: 'added', limit: 500 });
+  assert.ok(pos(added, late) < pos(added, early), '登録順で新しく登録した方が下にいる');
+
+  const updated = listSeries(db, { sort: 'updated', limit: 500 });
+  assert.ok(pos(updated, early) < pos(updated, late), '巻を足した方が上に来ていない');
+  assert.equal(updated.items[pos(updated, early)].volumeAddedAt, '2026-09-14T00:00:00.000Z');
+});
+
+test('巻を 1 つも読めない作品は作品の登録日で並ぶ', () => {
+  // **null のまま並べると SQLite では一番後ろに沈む。** 巻数の読めないファイルしか
+  // 持っていない作品が、この並びから消えたように見えてしまう
+  const loose = seed('[う] 巻の読めない作品', '巻の読めない作品', 'う', []);
+  // 他の作品は「今」で登録されているので、確実に新しい日付を置く
+  db.raw.prepare('UPDATE series SET first_seen_at = ? WHERE id = ?').run('2099-01-01T00:00:00.000Z', loose);
+
+  const updated = listSeries(db, { sort: 'updated', limit: 500 });
+  assert.equal(updated.items[0].id, loose);
+  assert.equal(updated.items[0].volumeAddedAt, '2099-01-01T00:00:00.000Z');
+});
