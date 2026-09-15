@@ -214,18 +214,25 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 
 /**
  * pinax が動いている PC の側で起きること (エクスプローラ) の入口。
- * **画面幅ではなく入力装置で見る** — 横向きのタブレットは幅では PC と区別できないし、
- * 手元は PC からも Tailscale 越しに見ているので接続元アドレスでも判定できない
  *
- * **`any-` を落とさない。** 素の `hover` / `pointer` は**主たる**入力装置しか答えない。
- * タッチ画面の付いた Windows 機はマウスがあっても「主は指」と判定され、
- * PC で見ているのにボタンが消えた (2026-09-15)。`any-` は「1 つでもあるか」を
- * 見るので取りこぼさない。スマホにはマウスもペンも無いから線はこちらで引ける。
+ * **「出す条件」ではなく「隠す条件」を書く。** ここは 2 度外している:
+ *
+ *   1. 接続元アドレスで判定 (2026-09-14) — 手元は PC からも Tailscale の口を
+ *      通して見ているので、接続元が pinax 自身のアドレスになるとは限らない
+ *   2. `(hover: hover) and (pointer: fine)` で出す (2026-09-15) — 手元の Brave は
+ *      hover / pointer / any-hover / any-pointer を**全部 false** で答える。
+ *      `any-` を足しても救えず、PC で見ているのにボタンが消えたまま
+ *
+ * どちらも「PC だと分かった時だけ出す」書き方で、**判定できない環境が丸ごと
+ * 「PC ではない」側へ落ちた**。逆に書く — 指しか無いと**はっきり分かった**時だけ
+ * 隠し、分からなければ出す。起きるのは「PC にウィンドウが 1 枚開く」だけなので、
+ * 出し過ぎより出ないことの方が重い (本人の指定)。
  */
-.pc-only { display: none; }
-@media (any-hover: hover) and (any-pointer: fine) {
-  .pc-only { display: inline-block; }
-}
+.pc-only { display: inline-block; }
+/* 指しか無い端末では意味が無いので隠す */
+@media (any-pointer: coarse) { .pc-only { display: none; } }
+/* ただしマウスも有るなら PC。タッチ画面付きのノートがここへ落ちる */
+@media (any-pointer: coarse) and (any-pointer: fine) { .pc-only { display: inline-block; } }
 
 /* ---- 要確認 (巻の重複・巻数不明) ---- */
 .issueline { margin: 10px 0 0; padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
