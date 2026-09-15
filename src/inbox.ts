@@ -52,21 +52,26 @@ function stripNoise(name: string): string {
 }
 
 /**
- * 話数。`Busamen_Gachi_Fighter_01s ch05-07` `…最後のレストランch84-103` のように
- * ch / c を伴うものと、`…遙か凍土のカナン_第006-014話_[2018-05-06～2019-04-03]` の
- * ように日本語で書かれたものがある。
+ * ch / c で書かれた話数。`Busamen_Gachi_Fighter_01s ch05-07` `…最後のレストランch84-103`。
+ *
+ * **これは巻の中の話を指すことがある**ので、剥がした後にもう一度巻を探す。
+ */
+const CHAPTER_EN = /[_\s.-]*(?:ch|c)(\d{1,4})(?:[-~_](\d{1,4}))?\s*$/i;
+
+/**
+ * 日本語で書かれた話数。`…遙か凍土のカナン_第006-014話_[2018-05-06～2019-04-03]`。
+ *
+ * **こちらが見つかったら話で確定し、巻を探しに行かない。** 探しに行くと
+ * `幼女戦記_外伝1,_2_第61-63話_…` の「外伝1, 2」の `2` を第 2 巻と読んで、
+ * `幼女戦記_外伝1,` というフォルダを掘る (2026-09-15 の計画で発見)。
+ *
+ * 末尾に縛っていないのは、後ろに配信期間や「雑誌寄せ集め」が付くから。
+ * そこで切ると、そのごみも一緒に落ちる。
  *
  * **話を巻に倒さない。** 倒すと「第103巻」が棚に並び、欠番の数直線が壊れる
- * (docs/ARCHITECTURE.md「巻と話は別々の数直線で数える」)。巻の表記が別にあるなら
- * そちらを採り、話しか無ければ話として持つ。
- *
- * 日本語側だけ末尾に縛っていないのは、後ろに配信期間が付くから。そこで切ると
- * 日付も一緒に落ちる。
+ * (docs/ARCHITECTURE.md「巻と話は別々の数直線で数える」)。
  */
-const CHAPTER = [
-  /[_\s.-]*(?:ch|c)(\d{1,4})(?:[-~_](\d{1,4}))?\s*$/i,
-  /[_\s.-]*第(\d{1,4})(?:[-~_](\d{1,4}))?話/,
-];
+const CHAPTER_JA = /[_\s.-]*第(\d{1,4})(?:[-~_](\d{1,4}))?話/;
 
 /**
  * 巻数の後ろに付く版・品質の印。実物から拾ったもの:
@@ -101,15 +106,20 @@ export function splitInboxName(stem: string): InboxName {
   let s = stem;
   let chapter: { from: number; to: number } | null = null;
 
-  for (const re of CHAPTER) {
-    const ch = s.match(re);
-    if (!ch || ch.index === undefined) continue;
+  const ja = s.match(CHAPTER_JA);
+  if (ja && ja.index !== undefined) {
+    const from = Number(ja[1]);
+    const to = ja[2] ? Number(ja[2]) : from;
+    if (from >= 1 && to >= from) return { work: s.slice(0, ja.index), from, to, unit: '話' };
+  }
+
+  const ch = s.match(CHAPTER_EN);
+  if (ch && ch.index !== undefined) {
     const from = Number(ch[1]);
     const to = ch[2] ? Number(ch[2]) : from;
     if (from >= 1 && to >= from) {
       chapter = { from, to };
       s = s.slice(0, ch.index);
-      break;
     }
   }
 
@@ -438,6 +448,36 @@ export function planMoves(
   return { moves, unresolved };
 }
 
+// ---- トレイの中で仕分ける ---------------------------------------------------
+
+/**
+ * 仕分け先の箱。棚へ移す前に、トレイの中でフォルダ分けするための 1 段。
+ *
+ * **人が中を見てから手で棚へ移す**ための分け方なので、「そのまま移せるか」で
+ * 分けている。棚に既にある作品はフォルダを合流させることになるので慎重に、
+ * 新しい作品はフォルダごと放り込むだけで済む。
+ */
+export const BUCKETS = ['_棚にある', '_新しい作品', '_要確認', '_話'] as const;
+export type Bucket = (typeof BUCKETS)[number];
+
+export function bucketOf(m: Move): Bucket {
+  // 話は巻と数直線が別なので、棚に並べる前に人が見る (保管しないことも多い)
+  if (m.unit === '話' && m.volumeFrom !== null) return '_話';
+  // 巻数を読めなかったもの。短編集・外伝・後日譚がここに来る
+  if (m.keepName) return '_要確認';
+  return m.via === 'yomi' || m.via === 'title' ? '_棚にある' : '_新しい作品';
+}
+
+/**
+ * 移動先の頭に箱を足した計画を返す。**元の計画には触らない。**
+ *
+ * 置き場所が変わるだけで、フォルダ名もファイル名も棚に入れる時と同じにする。
+ * ここで別の名前を付けると、人が手で棚へ移した後に pinax が読み戻せない。
+ */
+export function bucketize(plan: Plan): Plan {
+  return { ...plan, moves: plan.moves.map((m) => ({ ...m, to: path.join(bucketOf(m), m.to) })) };
+}
+
 // ---- 適用 -------------------------------------------------------------------
 
 export interface ApplyResult {
@@ -451,8 +491,11 @@ export interface ApplyResult {
  *
  * 3000 件を動かした後で「元がどこだったか」を思い出せないと、間違いを戻せない。
  * ログは 1 行 1 移動で、実行した順に書く (途中で落ちてもそこまでは残る)。
+ *
+ * `destRoot` は棚とは限らない。トレイの中で仕分ける時 (`bucketize`) は
+ * トレイ自身を渡す。どちらにせよ、その外へは 1 件も出さない。
  */
-export function applyMoves(plan: Plan, inboxDir: string, shelfRoot: string, logDir: string): ApplyResult {
+export function applyMoves(plan: Plan, inboxDir: string, destRoot: string, logDir: string): ApplyResult {
   fs.mkdirSync(logDir, { recursive: true });
   const logPath = path.join(logDir, `inbox-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`);
   const log = fs.openSync(logPath, 'a');
@@ -462,10 +505,10 @@ export function applyMoves(plan: Plan, inboxDir: string, shelfRoot: string, logD
   try {
     for (const m of plan.moves) {
       const src = path.resolve(inboxDir, m.from);
-      const dst = path.resolve(shelfRoot, m.to);
-      // トレイの外・棚の外へは絶対に触らせない。`..` を含む名前 1 つで棚の外へ出る
-      if (!src.startsWith(path.resolve(inboxDir) + path.sep) || !dst.startsWith(path.resolve(shelfRoot) + path.sep)) {
-        failed.push({ from: m.from, error: 'トレイか棚の外を指しています' });
+      const dst = path.resolve(destRoot, m.to);
+      // トレイの外・行き先の外へは絶対に触らせない。`..` を含む名前 1 つで外へ出る
+      if (!src.startsWith(path.resolve(inboxDir) + path.sep) || !dst.startsWith(path.resolve(destRoot) + path.sep)) {
+        failed.push({ from: m.from, error: 'トレイか行き先の外を指しています' });
         continue;
       }
       try {

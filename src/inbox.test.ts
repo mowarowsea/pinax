@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { foldInbox, inboxKeyOf, splitInboxName, suspectAnswers, type Answer } from './inbox.js';
+import {
+  bucketOf, bucketize, foldInbox, inboxKeyOf, splitInboxName, suspectAnswers,
+  type Answer, type Move,
+} from './inbox.js';
 
 /**
  * 受け入れトレイの読み方。**ここに並ぶのは全部、実物 3056 ファイルで踏んだ形**
@@ -57,6 +60,16 @@ test('日本語で書かれた話数も話のまま持つ', () => {
   const r = splitInboxName('[芝村裕吏×橋本晴一]_遙か凍土のカナン_第006-014話_[2018-05-06～2019-04-03]');
   assert.equal(r.work, '[芝村裕吏×橋本晴一]_遙か凍土のカナン');
   assert.deepEqual([r.from, r.to, r.unit], [6, 14, '話']);
+});
+
+/**
+ * 実際に踏んだ: 日本語の話を読んだ後に巻を探しに行き、「外伝1, 2」の `2` を
+ * 第 2 巻と読んで `幼女戦記_外伝1,` というフォルダを掘る計画になっていた。
+ */
+test('日本語の話が見つかったら巻を探しに行かない', () => {
+  const r = splitInboxName('幼女戦記_外伝1,_2_第61-63話_[2020-11〜2021-03]');
+  assert.equal(r.work, '幼女戦記_外伝1,_2');
+  assert.deepEqual([r.from, r.to, r.unit], [61, 63, '話']);
 });
 
 test('巻と話が両方あるなら巻を採る', () => {
@@ -153,4 +166,30 @@ test('今のトレイに無いキーは疑いの数に入れない', () => {
   ]);
   assert.equal(suspectAnswers(answers).size, 2, '両方生きていれば疑う');
   assert.equal(suspectAnswers(answers, new Set(['onepunchman'])).size, 0, '片方が宙に浮いていれば疑わない');
+});
+
+// ---- トレイの中で仕分ける --------------------------------------------------
+
+const TO = path.join('[著者] 作品', '[著者] 作品 第01巻.rar');
+
+const move = (over: Partial<Move>): Move => ({
+  from: 'x.rar', to: TO, work: '作品', author: '著者',
+  volumeFrom: 1, volumeTo: 1, unit: '巻', keepName: false, via: 'answer', ...over,
+});
+
+test('仕分け先は「そのまま棚へ移せるか」で分ける', () => {
+  assert.equal(bucketOf(move({ via: 'yomi' })), '_棚にある');
+  assert.equal(bucketOf(move({ via: 'title' })), '_棚にある');
+  assert.equal(bucketOf(move({ via: 'answer' })), '_新しい作品');
+  assert.equal(bucketOf(move({ via: 'file' })), '_新しい作品');
+  assert.equal(bucketOf(move({ keepName: true, volumeFrom: null, volumeTo: null })), '_要確認');
+  assert.equal(bucketOf(move({ unit: '話', volumeFrom: 61, volumeTo: 63 })), '_話');
+});
+
+/** 箱を足すだけ。名前が変わると、人が手で棚へ移した後に pinax が読み戻せない */
+test('仕分けても作品フォルダ名とファイル名は棚に入れる時と同じ', () => {
+  const plan = { moves: [move({ via: 'yomi' })], unresolved: [] };
+  const sorted = bucketize(plan);
+  assert.equal(sorted.moves[0].to, path.join('_棚にある', TO));
+  assert.equal(plan.moves[0].to, TO, '元の計画には触らない');
 });

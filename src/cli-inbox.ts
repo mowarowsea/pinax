@@ -3,8 +3,8 @@ import path from 'node:path';
 import { loadConfig } from './config.js';
 import { Db } from './db.js';
 import {
-  applyMoves, foldInbox, formatPlan, inboxRootOf, matchByYomi, planMoves,
-  readAnswers, shelfRootOf, shelfWithYomi, suspectAnswers,
+  applyMoves, bucketOf, bucketize, foldInbox, formatPlan, inboxRootOf, matchByYomi,
+  planMoves, readAnswers, shelfRootOf, shelfWithYomi, suspectAnswers, type Plan,
 } from './inbox.js';
 
 /**
@@ -13,10 +13,15 @@ import {
  *   npm run inbox                    畳んだ結果を見る (何件を外に聞く必要があるか)
  *   npm run inbox -- ask ask.tsv     外に聞く分を TSV で書き出す
  *   npm run inbox -- plan ans.tsv    答えを当てて計画を見る (**動かさない**)
- *   npm run inbox -- apply ans.tsv   計画を実行する (移動ログを残す)
+ *   npm run inbox -- sort ans.tsv    トレイの中でフォルダ分けする (棚には出さない)
+ *   npm run inbox -- apply ans.tsv   棚へ移す (移動ログを残す)
  *
- * **plan を見てから apply する。** 3000 件を機械が黙って動かして間違えると、
+ * **plan を見てから動かす。** 3000 件を機械が黙って動かして間違えると、
  * どれが元どこにあったか分からなくなる。
+ *
+ * sort と apply の違いは行き先だけ。sort はトレイの中に作品フォルダを掘って
+ * そこへ入れる — **人が中を見てから手で棚へ移すため**で、名前の付け方は
+ * どちらも同じ。
  */
 const [cmd = 'look', file] = process.argv.slice(2);
 
@@ -66,8 +71,8 @@ if (cmd === 'ask') {
   process.exit(0);
 }
 
-if (cmd !== 'plan' && cmd !== 'apply') {
-  console.error(`知らないコマンド: ${cmd} (look / ask / plan / apply)`);
+if (cmd !== 'plan' && cmd !== 'sort' && cmd !== 'apply') {
+  console.error(`知らないコマンド: ${cmd} (look / ask / plan / sort / apply)`);
   process.exit(1);
 }
 if (!file || !fs.existsSync(file)) {
@@ -104,16 +109,43 @@ if (cmd === 'plan') {
   const out = path.join(cfg.dataDir, 'inbox-plan.json');
   fs.writeFileSync(out, JSON.stringify(plan, null, 1));
   console.log(`\n計画を書き出し: ${out}`);
-  console.log('中身を見て良ければ: npm run inbox -- apply ' + file);
+  console.log(`中身を見て良ければ:`);
+  console.log(`  npm run inbox -- sort ${file}    トレイの中でフォルダ分けする`);
+  console.log(`  npm run inbox -- apply ${file}   棚へ移す`);
   process.exit(0);
 }
 
-console.log(`\n${plan.moves.length} ファイルを ${shelfRoot.path} へ移します...`);
-const result = applyMoves(plan, inboxRoot.path, shelfRoot.path, cfg.dataDir);
+/** 仕分けの箱ごとに、何作品 / 何本になるかを数える */
+function countBuckets(p: Plan): string[] {
+  const boxes = new Map<string, { files: number; folders: Set<string> }>();
+  for (const m of p.moves) {
+    const b = bucketOf(m);
+    if (!boxes.has(b)) boxes.set(b, { files: 0, folders: new Set() });
+    const box = boxes.get(b)!;
+    box.files++;
+    box.folders.add(path.dirname(m.to));
+  }
+  return [...boxes].map(([b, v]) => `  ${b.padEnd(8)} ${String(v.folders.size).padStart(4)} フォルダ / ${v.files} 本`);
+}
+
+const dest = cmd === 'sort' ? inboxRoot.path : shelfRoot.path;
+const moving = cmd === 'sort' ? bucketize(plan) : plan;
+
+if (cmd === 'sort') {
+  console.log('\nトレイの中でフォルダ分けします。棚には出しません。');
+  console.log(countBuckets(plan).join('\n'));
+}
+
+console.log(`\n${moving.moves.length} ファイルを ${dest} へ移します...`);
+const result = applyMoves(moving, inboxRoot.path, dest, cfg.dataDir);
 console.log(`移動: ${result.moved} 件`);
 if (result.failed.length) {
   console.log(`失敗: ${result.failed.length} 件`);
   for (const f of result.failed.slice(0, 10)) console.log(`  ${f.from} — ${f.error}`);
 }
 console.log(`移動ログ: ${result.logPath}`);
-console.log('\n棚に載せるには画面の「棚を読み直す」か POST /api/scan。');
+console.log(
+  cmd === 'sort'
+    ? '\n中を見て、フォルダごと棚へ移してください。棚に載るのは移した後のスキャンから。'
+    : '\n棚に載せるには画面の「棚を読み直す」か POST /api/scan。'
+);
