@@ -558,9 +558,19 @@ function detailHtml(d) {
 
   // 持っている巻と欠番を 1 本の数直線に並べる。歯抜けが目で見える形にする
   const main = d.holdings.find((h) => h.unit === '巻') ?? d.holdings[0];
+  // 数直線に置くのは単巻だけ。**合本 (第01-02巻) を混ぜてはいけない** —
+  // 混ぜると volumeFrom の位置で 1 度描かれ、下の「後ろに足す」でもう 1 度描かれて
+  // 同じ巻が 2 枚並ぶ。単巻の第01巻と合本の第01-02巻を両方持っている時は
+  // 後から入れた合本が単巻を Map から押し出し、単巻の方が消える
   const owned = new Map();
-  for (const v of d.volumes) if (!main || v.unit === main.unit) owned.set(v.volumeFrom, v);
+  for (const v of d.volumes) {
+    if (main && v.unit !== main.unit) continue;
+    if (v.volumeFrom !== v.volumeTo) continue;
+    owned.set(v.volumeFrom, v);
+  }
   const line = [];
+  // 数直線に描いた巻。後ろに足す時、同じ巻を二度出さないための印
+  const placed = new Set();
   if (main) {
     /**
      * **手元の最大巻で数直線を止めない。** 外の書誌が知っている巻まで伸ばす。
@@ -572,14 +582,17 @@ function detailHtml(d) {
     const last = main.unit === '巻' && pub.max ? Math.max(main.max, pub.max) : main.max;
     for (let i = 1; i <= last; i++) {
       const v = owned.get(i);
-      if (v) { line.push(volHtml(v)); continue; }
-      if (d.volumes.some((x) => x.volumeFrom <= i && x.volumeTo >= i)) continue;
+      if (v) { line.push(volHtml(v)); placed.add(v.id); continue; }
+      // 合本の中の番号。その巻は下で合本 1 枚として出るので、ここでは欠番にしない
+      if (d.volumes.some((x) => x.unit === main.unit && x.volumeFrom <= i && x.volumeTo >= i)) continue;
       // 手元の最大巻より先は「未購入」。書誌が知らない番号は出さない (あるとは限らない)
       if (i > main.max) { if (knownSet.has(i)) line.push(missingVolHtml(i, main.unit, 'ahead')); }
       else line.push(missingVolHtml(i, main.unit, 'gap'));
     }
-    // 範囲でしか持っていない巻 (合本) は数直線に乗らないので後ろに足す
-    for (const v of d.volumes) if (v.volumeFrom !== v.volumeTo) line.push(volHtml(v));
+    // 数直線に乗らなかった巻を後ろに足す — 合本 (第01-02巻) と、
+    // 別単位の巻 (巻で数える作品に 1 つだけ混ざった「第224話」など)。
+    // **ここで落とすと、持っているのに画面から消える**
+    for (const v of d.volumes) if (!placed.has(v.id)) line.push(volHtml(v));
   } else {
     for (const v of d.volumes) line.push(volHtml(v));
   }
