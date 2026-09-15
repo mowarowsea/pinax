@@ -1,12 +1,14 @@
 import type { Config } from '../config.js';
 import type { Db, SeriesPick } from '../db.js';
+import { ProviderStopError } from './cache.js';
 import {
-  byVolumeOf, groupCandidates, ndlCandidate, rakutenCandidate,
+  byVolumeOf, googleCandidate, groupCandidates, ndlCandidate, rakutenCandidate,
   type Candidate, type CandidateGroup, type CandidateProvider,
 } from './candidates.js';
 import { fetchAndBurn, fetchCover, refreshSeriesCover, writeCover, imageHostAllowed } from './covers.js';
+import { googleReady, searchGoogle } from './google.js';
 import { searchNdl } from './ndl.js';
-import { RakutenAuthError, rakutenReady, searchRakuten } from './rakuten.js';
+import { rakutenReady, searchRakuten } from './rakuten.js';
 
 /**
  * **人が「これ！」と選ぶ道。**
@@ -49,11 +51,15 @@ export interface SearchResult {
  * 書影の候補を外に聞く。
  *
  * NDL には著者を添える (ndl.ts の頭: 添えないと CD やアンソロジーが混ざる)。
- * **書名があるうちは楽天に著者を渡さない** — 渡すと 0 件になる (rakuten.ts の頭)。
+ * **書名があるうちは楽天にも Google にも著者を渡さない** — どちらも表記が 1 文字違うだけで
+ * 0 件になる (rakuten.ts / google.ts の頭)。
  *
  * **作品名を空にして著者だけで引ける。** 棚のフォルダ名が実際の書名と違っていて
  * 何を入れれば当たるのか分からない時に、作者の著作を並べて選ぶ道が要る。
- * この時は楽天にも著者を渡す (渡さないと条件が 1 つも無くなる)。
+ * この時は著者を渡す (渡さないと条件が 1 つも無くなる)。
+ *
+ * **openBD はここに並ばない。** ISBN 起点でしか引けないので、人が書名で探す道に出せない
+ * (openbd.ts の頭)。
  */
 export async function searchCandidates(db: Db, cfg: Config, q: SearchQuery): Promise<SearchResult> {
   const title = String(q.title ?? '').trim();
@@ -87,8 +93,24 @@ export async function searchCandidates(db: Db, cfg: Config, q: SearchQuery): Pro
       });
       for (const r of found.records) items.push(rakutenCandidate(r, cfg.bib.rakuten.imageSize));
     } catch (e) {
-      const msg = e instanceof RakutenAuthError ? `${e.message} (${e.detail})` : (e as Error).message;
+      const msg = e instanceof ProviderStopError ? `${e.message} (${e.detail})` : (e as Error).message;
       errors.push({ provider: 'rakuten', message: msg });
+    }
+  }
+
+  if ((want === 'all' || want === 'google') && googleReady(cfg)) {
+    asked.push('google');
+    try {
+      const found = await searchGoogle(db, cfg, {
+        title: title || undefined,
+        author: title ? undefined : author ?? undefined,
+        hits: 40,
+        refresh: q.refresh,
+      });
+      for (const r of found.records) items.push(googleCandidate(r));
+    } catch (e) {
+      const msg = e instanceof ProviderStopError ? `${e.message} (${e.detail})` : (e as Error).message;
+      errors.push({ provider: 'google', message: msg });
     }
   }
 
@@ -98,7 +120,7 @@ export async function searchCandidates(db: Db, cfg: Config, q: SearchQuery): Pro
 export interface PickResult {
   seriesId: number;
   label: string;
-  /** 聞きに行った先 ('all' | 'ndl' | 'rakuten') */
+  /** 聞きに行った先 ('all' | 'ndl' | 'rakuten' | 'google') */
   scope: string;
   groupKey: string;
   /** 貼り直しの元にした束の書名 */
@@ -111,6 +133,8 @@ export interface PickResult {
   coversWritten: number;
   /** 表紙を取れなかった巻 */
   coverMissed: number[];
+  /** 回しても無駄なので打ち切ったか (enrich.ts の EnrichResult と同じ) */
+  stopped: boolean;
   error: string | null;
 }
 
@@ -173,7 +197,8 @@ export async function applyPick(
   const out: PickResult = {
     seriesId, label,
     scope: pick?.scope ?? '', groupKey: pick?.groupKey ?? '', title: pick?.title ?? '',
-    recordCount: 0, publishedMax: null, bibWritten: 0, coversWritten: 0, coverMissed: [], error: null,
+    recordCount: 0, publishedMax: null, bibWritten: 0, coversWritten: 0, coverMissed: [],
+    stopped: false, error: null,
   };
   if (!s) return { ...out, error: '作品がありません' };
   if (!pick) return { ...out, error: 'この作品にはまだシリーズが選ばれていません' };
@@ -263,7 +288,7 @@ export async function applyPick(
       if (got) out.coversWritten++;
       else out.coverMissed.push(vol);
     } catch (e) {
-      if (e instanceof RakutenAuthError) return { ...out, error: `${e.message} (${e.detail})` };
+      if (e instanceof ProviderStopError) return { ...out, stopped: true, error: `${e.message} (${e.detail})` };
       out.coverMissed.push(vol);
     }
   }
@@ -278,7 +303,7 @@ export async function applyPick(
     try {
       if (await burnFromCandidate(db, cfg, seriesId, null, head)) out.coversWritten++;
     } catch (e) {
-      if (e instanceof RakutenAuthError) return { ...out, error: `${e.message} (${e.detail})` };
+      if (e instanceof ProviderStopError) return { ...out, stopped: true, error: `${e.message} (${e.detail})` };
       // 取れなくても致命的ではない。表紙の無い作品として並ぶ
     }
   }

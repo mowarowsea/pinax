@@ -1,9 +1,12 @@
 import type { Config } from '../config.js';
 import type { Db } from '../db.js';
+import { ProviderStopError } from './cache.js';
 import { fetchCover, refreshSeriesCover } from './covers.js';
+import { googleReady } from './google.js';
 import { byVolume, ndlThumbnailUrl, searchNdl, type NdlRecord } from './ndl.js';
+import { openbdReady } from './openbd.js';
 import { applyPick } from './pick.js';
-import { rakutenReady, RakutenAuthError } from './rakuten.js';
+import { rakutenReady } from './rakuten.js';
 
 /**
  * 蔵書の 1 作品に、外から取った書誌と書影を貼る。
@@ -13,16 +16,17 @@ import { rakutenReady, RakutenAuthError } from './rakuten.js';
  *   [著者] 作品名 ──▶ NDLサーチ (title + creator) ──▶ 巻ごとの ISBN
  *                 ──▶ NDL サムネイル /thumbnail/{ISBN}.jpg ──▶ ローカルへ焼く
  *
- * **openBD は書影を持っていない。** 手元の漫画 100 冊ぶんの ISBN で試したところ、
- * データは 85 件返るのに `summary.cover` は 0 件だった。書誌の補完先としては使えるが、
- * 表紙の供給源にはならない。
- *
- * 書影は **NDL → 楽天ブックス** の順に試す (2026-09-14 に楽天の鍵が入って追加):
+ * 書影は **NDL → 楽天 → openBD → Google Books** の順に試す (bib/covers.ts の fetchCover)。
  * NDL のサムネイルは ISBN のうち半分ほどしか画像を持っておらず、手元では
  * **ISBN は分かっているのに表紙が無い巻が 2703 件**残っていた。そこを楽天が
- * ISBN 直引きで埋める。**書誌は NDL のまま**で、楽天には表紙だけ任せる —
+ * ISBN 直引きで埋める。**書誌は NDL のまま**で、後ろの 3 つには表紙だけ任せる —
  * 巻の区切りは NDL の `dcndl:volume` の方が素直に取れるため。
  * (楽天は書名に「日常（十二）」のように漢数字で巻を書くので、そこを読むのは分が悪い)
+ *
+ * openBD と Google Books は**楽天でも埋まらなかった巻の受け皿**。実測 (2026-09-15、
+ * 手元で表紙の無い巻の ISBN で数えた) では openBD が 0/200、Google が ISBN 直引きで
+ * 14/100。Google は**書名で引くと電子版の書影**が出てくるので、そちらが本命
+ * (bib/google.ts / bib/openbd.ts の頭)。
  *
  * 焼いた画像は二度と外に聞かない。外部サービスが消えてもカタログは残る。
  */
@@ -42,6 +46,14 @@ export interface EnrichResult {
   stale: boolean;
   /** 人が選んだシリーズを使った時、その書名。null なら書名と著者から自動で当てた */
   picked: string | null;
+  /**
+   * **回しても無駄なので打ち切ったか** (`ProviderStopError` — 鍵の間違い、接続元 IP、1 日の上限)。
+   *
+   * `error` の文字を読んで判定してはいけない — 提供元が増えるたびに
+   * 「どの言葉が入っていたら止めるか」を書き足すことになり、書き忘れた相手の分だけ
+   * 静かに空振りし続ける。**止める理由そのものを持たせる。**
+   */
+  stopped: boolean;
   error: string | null;
 }
 
@@ -81,7 +93,7 @@ export async function enrichSeries(db: Db, cfg: Config, seriesId: number, opts: 
   const label = s ? `${s.author ? `[${s.author}] ` : ''}${s.title}` : `#${seriesId}`;
   const out: EnrichResult = {
     seriesId, label, recordCount: 0, publishedMax: null, bibWritten: 0, coversWritten: 0,
-    coverMissed: [], cached: false, stale: false, picked: null, error: null,
+    coverMissed: [], cached: false, stale: false, picked: null, stopped: false, error: null,
   };
   if (!s) return { ...out, error: '作品がありません' };
 
@@ -98,7 +110,8 @@ export async function enrichSeries(db: Db, cfg: Config, seriesId: number, opts: 
     return {
       ...out,
       recordCount: r.recordCount, publishedMax: r.publishedMax, bibWritten: r.bibWritten,
-      coversWritten: r.coversWritten, coverMissed: r.coverMissed, picked: r.title, error: r.error,
+      coversWritten: r.coversWritten, coverMissed: r.coverMissed, picked: r.title,
+      stopped: r.stopped, error: r.error,
     };
   }
 
@@ -171,8 +184,8 @@ export async function enrichSeries(db: Db, cfg: Config, seriesId: number, opts: 
       if (await fetchCover(db, cfg, seriesId, vol, rec.isbn)) out.coversWritten++;
       else out.coverMissed.push(vol);
     } catch (e) {
-      // 鍵・IP の間違いは黙って飲まない。残りを回しても全部同じ理由で落ちる
-      if (e instanceof RakutenAuthError) return { ...out, error: `${e.message} (${e.detail})` };
+      // 鍵・IP の間違い、1 日の上限は黙って飲まない。残りを回しても全部同じ理由で落ちる
+      if (e instanceof ProviderStopError) return { ...out, stopped: true, error: `${e.message} (${e.detail})` };
       out.coverMissed.push(vol);
     }
   }
@@ -188,7 +201,7 @@ export async function enrichSeries(db: Db, cfg: Config, seriesId: number, opts: 
     try {
       if (await fetchCover(db, cfg, seriesId, null, seriesRecord.isbn)) out.coversWritten++;
     } catch (e) {
-      if (e instanceof RakutenAuthError) return { ...out, error: `${e.message} (${e.detail})` };
+      if (e instanceof ProviderStopError) return { ...out, stopped: true, error: `${e.message} (${e.detail})` };
       // 取れなくても致命的ではない。表紙の無い作品として並ぶ
     }
   }
@@ -236,8 +249,8 @@ export interface VolumeCoverResult {
   byProvider: Record<string, number>;
   /** 表紙を貼り直した作品の数 */
   seriesTouched: number;
-  /** 鍵・接続元 IP の問題で打ち切った時の理由 */
-  authError: string | null;
+  /** 打ち切った時の理由 (鍵の間違い、接続元 IP、1 日の上限)。**誰に何をされたかは文面が名乗る** */
+  stopError: string | null;
   /** DB がスキャンに掴まれていて打ち切った */
   dbBusy: boolean;
 }
@@ -250,7 +263,7 @@ export interface VolumeCoverResult {
  * 作品を開くと中身が歯抜け、という状態。ここがそれを埋める。
  *
  * **NDL は飛ばす。** これらの巻は enrichSeries が既に NDL のサムネイルを試して
- * 取れなかったものなので、もう一度聞いても答えは変わらない。最初から楽天に行く。
+ * 取れなかったものなので、もう一度聞いても答えは変わらない。楽天から先に行く。
  *
  * 進み具合は `bib.cover_tried_at` が持つ。**取れなかった時にも押す** —
  * 押さないと、どこにも書影の無い巻を毎回選び直して先へ進まなくなる。
@@ -261,9 +274,10 @@ export async function fillVolumeCovers(
   opts: { limit?: number; retryAfterDays?: number } = {}
 ): Promise<VolumeCoverResult> {
   const out: VolumeCoverResult = {
-    tried: 0, written: 0, byProvider: {}, seriesTouched: 0, authError: null, dbBusy: false,
+    tried: 0, written: 0, byProvider: {}, seriesTouched: 0, stopError: null, dbBusy: false,
   };
-  if (!rakutenReady(cfg)) return out;
+  // ここに来る巻は NDL を試して駄目だったものなので、**NDL 以外に聞く先が無ければ何もしない**
+  if (!rakutenReady(cfg) && !openbdReady(cfg) && !googleReady(cfg)) return out;
 
   const retryBefore = new Date(Date.now() - (opts.retryAfterDays ?? 60) * 86_400_000).toISOString();
   const rows = db.raw
@@ -306,10 +320,10 @@ export async function fillVolumeCovers(
         touched.add(Number(r.series_id));
       }
     } catch (e) {
-      if (e instanceof RakutenAuthError) {
+      if (e instanceof ProviderStopError) {
         // ここで止める。残りを回しても全部同じ理由で落ちるだけで、
         // 無駄に印だけ進んで次の巡回で拾い直せなくなる
-        out.authError = `${e.message} (${e.detail})`;
+        out.stopError = `${e.message} (${e.detail})`;
         break;
       }
       // DB が掴めない = スキャンと噛み合った。この回は諦めて次の巡回に回す。

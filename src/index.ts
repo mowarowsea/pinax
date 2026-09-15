@@ -85,9 +85,10 @@ async function fillCovers(): Promise<void> {
   const done = rs.filter((r) => r.coversWritten > 0);
   if (done.length) log(`表紙(作品) ${done.map((r) => `${r.label}(${r.coversWritten}枚)`).join(', ')}`);
 
-  const authFailed = rs.find((r) => r.error?.includes('楽天'));
-  if (authFailed) {
-    log(`楽天に弾かれました: ${authFailed.error}`);
+  // 鍵や接続元 IP の間違いは、残りを回しても全部同じ理由で落ちる。ここで切り上げる
+  const stopped = rs.find((r) => r.stopped);
+  if (stopped) {
+    log(`打ち切りました: ${stopped.error}`);
     return;
   }
 
@@ -96,9 +97,9 @@ async function fillCovers(): Promise<void> {
     const by = Object.entries(v.byProvider).map(([k, n]) => `${k} ${n}`).join(' / ');
     log(`表紙(巻) ${v.written}/${v.tried}枚 (${by})  作品 ${v.seriesTouched} 件を貼り直し`);
   }
-  // 鍵か接続元 IP の問題。**黙って止まらせない** — 放っておくと
+  // 鍵・接続元 IP・1 日の上限。**黙って止まらせない** — 放っておくと
   // 「なぜか表紙が増えない」とだけ見えて原因に辿り着けない
-  if (v.authError) log(`楽天に弾かれました: ${v.authError}`);
+  if (v.stopError) log(`打ち切りました: ${v.stopError}`);
 }
 
 const coverTimer = setInterval(() => {

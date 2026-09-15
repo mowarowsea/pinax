@@ -16,6 +16,8 @@
 import { loadConfig } from './config.js';
 import { Db } from './db.js';
 import { fillMissingCovers, fillVolumeCovers } from './bib/enrich.js';
+import { googleReady } from './bib/google.js';
+import { openbdReady } from './bib/openbd.js';
 import { rakutenReady } from './bib/rakuten.js';
 
 const args = process.argv.slice(2);
@@ -49,7 +51,18 @@ const remaining = (): number =>
       .get() as { n: number }
   ).n;
 
-console.log(`楽天: ${rakutenReady(cfg) ? '使えます' : '**使いません** (鍵が無いか providers に rakuten が無い)'}`);
+/**
+ * **どこに聞けるのかを先に出す。** 鍵が無いまま走らせると「0 枚」とだけ出て、
+ * 相手が書影を持っていないのか、こちらが聞きに行けていないのかが見分けられない。
+ */
+const ready: [string, boolean][] = [
+  ['楽天', rakutenReady(cfg)],
+  ['openBD', openbdReady(cfg)],
+  ['Google', googleReady(cfg)],
+];
+for (const [name, on] of ready) {
+  console.log(`${name}: ${on ? '使えます' : '**使いません** (鍵が無いか providers に入っていない)'}`);
+}
 
 if (mode === 'series') {
   const rs = await fillMissingCovers(db, cfg, { seriesLimit: limit, coverBudgetPerSeries: 30 });
@@ -75,8 +88,9 @@ if (mode === 'series') {
     touched += r.seriesTouched;
     for (const [k, n] of Object.entries(r.byProvider)) totals[k] = (totals[k] ?? 0) + n;
     console.log(`  … ${tried} 巻まで / 焼けた ${written} 枚 / 残り ${remaining()} 巻`);
-    if (r.authError) {
-      console.error(`\n**楽天に弾かれました**: ${r.authError}`);
+    if (r.stopError) {
+      // 誰に何を言われたかは message の側が名乗る (ProviderStopError)
+      console.error(`\n**打ち切りました**: ${r.stopError}`);
       break;
     }
     if (r.dbBusy) {

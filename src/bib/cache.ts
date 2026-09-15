@@ -16,6 +16,27 @@ import type { Config } from '../config.js';
  * DryEyes や PowerDowner から見た時も、ここが「外の世界の窓口」になる。
  */
 
+/**
+ * **次の 1 冊を試しても同じ理由で落ちる失敗。相手のその場の不調とは必ず分けて扱う。**
+ *
+ * 鍵の書き間違い、接続元 IP の未申告、1 日の上限 — どれも「たまたま今の 1 冊が駄目だった」
+ * のではなく、**残りを回しても全部同じところで落ちる**もの。呼び出し側はこれを見たら
+ * 巡回を続けるのではなく、**その回を打ち切って人に知らせる**のが正しい。
+ * 黙って回し続けると、取れるはずだった巻にまで「駄目だった」の印 (`bib.cover_tried_at`)
+ * だけが押されて進み、次の巡回からは選ばれなくなる。
+ *
+ * 提供元ごとに継ぎ足して名前を付ける (`RakutenAuthError` / `GoogleAuthError` /
+ * `GoogleQuotaError`)。**受け止める側はこの親だけを見る** —
+ * 提供元を足すたびに catch を書き足さずに済む。
+ * 直し方は相手ごとに違うので、**何をすればよいかは message の側が名乗る**。
+ */
+export class ProviderStopError extends Error {
+  constructor(readonly provider: string, message: string, readonly detail: string) {
+    super(message);
+    this.name = 'ProviderStopError';
+  }
+}
+
 export interface CachedResponse {
   status: number;
   body: string;

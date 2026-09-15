@@ -287,7 +287,8 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     if (!series) throw new HttpError(404, 'その作品はありません');
 
     const p = req.query.provider;
-    const provider: CandidateProvider | 'all' = p === 'ndl' || p === 'rakuten' ? p : 'all';
+    const provider: CandidateProvider | 'all' =
+      p === 'ndl' || p === 'rakuten' || p === 'google' ? p : 'all';
     // **空文字は「その欄なし」として通す。** 書名を消して著者だけで引きたい時も、
     // 著者を消して書名だけで引きたい時もあるので、未指定 (undefined) と区別する。
     // 未指定の時だけ棚の値を当てる
@@ -320,8 +321,8 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     if (!series) throw new HttpError(404, 'その作品はありません');
 
     const scope = req.body?.scope ?? 'all';
-    if (scope !== 'all' && scope !== 'ndl' && scope !== 'rakuten') {
-      throw new HttpError(400, 'scope は all / ndl / rakuten のどれかです');
+    if (scope !== 'all' && scope !== 'ndl' && scope !== 'rakuten' && scope !== 'google') {
+      throw new HttpError(400, 'scope は all / ndl / rakuten / google のどれかです');
     }
     const groupKey = String(req.body?.groupKey ?? '').trim();
     if (!groupKey) throw new HttpError(400, 'groupKey が要ります');
@@ -443,7 +444,11 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     const url = req.query.url;
     if (!url) throw new HttpError(400, 'url が要ります');
     // 行き先は設定で許した提供元だけ。任意の URL を中継する踏み台にしない
-    const allowed = ['https://ndlsearch.ndl.go.jp/', 'https://api.openbd.jp/'];
+    const allowed = [
+      'https://ndlsearch.ndl.go.jp/',
+      'https://api.openbd.jp/',
+      'https://www.googleapis.com/books/',
+    ];
     if (!allowed.some((a) => url.startsWith(a))) {
       throw new HttpError(400, `この行き先は中継しません: ${url}`);
     }

@@ -1,6 +1,6 @@
 import type { Config } from '../config.js';
 import type { Db } from '../db.js';
-import { cachedFetch } from './cache.js';
+import { cachedFetch, ProviderStopError } from './cache.js';
 import { normalizeIsbn } from './ndl.js';
 import { seriesKeyOf } from '../volume.js';
 
@@ -43,16 +43,16 @@ export interface RakutenRecord {
 }
 
 /**
- * こちら側の設定が間違っている時の失敗。相手の不調とは**必ず分けて扱う**。
+ * こちら側の設定が間違っている時の失敗 (`ProviderStopError` の楽天版)。
  *
  * 楽天は登録した接続元 IP からしか通さない。回線の都合でグローバル IP が変わると
  * ここに落ちるが、それは楽天が壊れているのではなく、楽天の管理画面に今の IP を
  * 足せば直る。呼び出し側はこれを見たら「楽天を今回は諦めて NDL で続ける」のではなく
  * **人に知らせる**のが正しい。
  */
-export class RakutenAuthError extends Error {
-  constructor(message: string, readonly detail: string) {
-    super(message);
+export class RakutenAuthError extends ProviderStopError {
+  constructor(message: string, detail: string) {
+    super('rakuten', message, detail);
     this.name = 'RakutenAuthError';
   }
 }

@@ -55,8 +55,12 @@ export interface Config {
     ttlDays: number;
     /** 外部への問い合わせ間隔 (ミリ秒)。相手に迷惑をかけない最低限 */
     minIntervalMs: number;
-    /** 使う提供元。上から順に試す */
-    providers: ('ndl' | 'openbd' | 'rakuten')[];
+    /**
+     * 使う提供元。**ここから外した相手には一切聞きに行かない。**
+     * 書影を試す順番は `bib/covers.ts` の fetchCover が持っていて、この並びでは決まらない
+     * (実測の当たりやすさで決めてある)。
+     */
+    providers: ('ndl' | 'openbd' | 'rakuten' | 'google')[];
     /**
      * 楽天ブックス。**鍵は `.env` から入る** (RAKUTEN_APPLICATION_ID / RAKUTEN_ACCESS_KEY)。
      * 空なら楽天には一切問い合わせない — 未設定でも NDL だけで普通に動く。
@@ -72,6 +76,14 @@ export interface Config {
        * 600 は棚に並べた時に粗く見えず、1 枚 100KB に収まる線
        */
       imageSize: number;
+    };
+    /**
+     * Google Books。**鍵は `.env` から入る** (GOOGLE_BOOKS_API_KEY)。
+     * 空なら聞きに行かない — 鍵無しでも API は叩けるが、接続元 IP ごとの細い枠で
+     * すぐ 429 になるので、pinax としては「鍵が無い = 使わない」と決めている。
+     */
+    google: {
+      apiKey: string;
     };
   };
   notify: {
@@ -90,8 +102,9 @@ const DEFAULTS: Config = {
   bib: {
     ttlDays: 90,
     minIntervalMs: 1200,
-    providers: ['ndl', 'rakuten', 'openbd'],
+    providers: ['ndl', 'rakuten', 'openbd', 'google'],
     rakuten: { applicationId: '', accessKey: '', affiliateId: '', imageSize: 600 },
+    google: { apiKey: '' },
   },
   notify: { ntfyUrl: '' },
 };
@@ -126,6 +139,12 @@ export function loadConfig(file = 'config.json'): Config {
           process.env.RAKUTEN_AFFLIATE_ID ??
           user.bib?.rakuten?.affiliateId ??
           '',
+      },
+      google: {
+        ...DEFAULTS.bib.google,
+        ...(user.bib?.google ?? {}),
+        // **環境変数が最後に勝つ** (楽天と同じ)
+        apiKey: process.env.GOOGLE_BOOKS_API_KEY ?? user.bib?.google?.apiKey ?? '',
       },
     },
     notify: { ...DEFAULTS.notify, ...(user.notify ?? {}) },

@@ -4,10 +4,12 @@ import path from 'node:path';
 import type { Config } from '../config.js';
 import type { Db } from '../db.js';
 import { fetchBinary } from './cache.js';
-import { ndlThumbnailUrl } from './ndl.js';
 import {
-  findRakutenByIsbn, findRakutenByTitle, rakutenImageUrl, rakutenReady, type RakutenRecord,
-} from './rakuten.js';
+  findGoogleByIsbn, findGoogleByTitle, googleReady, GOOGLE_PLACEHOLDER_COVERS, type GoogleRecord,
+} from './google.js';
+import { ndlThumbnailUrl } from './ndl.js';
+import { findOpenbdCover, openbdReady } from './openbd.js';
+import { findRakutenByIsbn, findRakutenByTitle, rakutenImageUrl, rakutenReady } from './rakuten.js';
 
 /**
  * 書影を**焼いて置く**ところ。外から取った画像がカタログに載る道はここ 1 本だけ。
@@ -29,23 +31,48 @@ const IMAGE_HOSTS = [
   'https://image.rakuten.co.jp/',
   'https://books.rakuten.co.jp/',
   'https://shop.r10s.jp/',
+  'https://books.google.com/books/content',
+  'https://books.google.co.jp/books/content',
+  'https://cover.openbd.jp/',
 ];
 
 export function imageHostAllowed(url: string): boolean {
   return IMAGE_HOSTS.some((h) => String(url ?? '').startsWith(h));
 }
 
-/** その URL を取りに行く時に添える Referer。NDL は無いと 403 で弾く (cache.ts の fetchBinary) */
+/**
+ * その URL を取りに行く時に添える Referer。NDL は無いと 403 で弾く (cache.ts の fetchBinary)。
+ *
+ * **その置き場の元のサイトを名乗る。** 余所の名前を出す理由が無いし、
+ * 画像の置き場が Referer を見るようになった時に、素直に通るのはこの形。
+ */
 export function refererFor(url: string): string {
-  return url.startsWith('https://ndlsearch.ndl.go.jp/')
-    ? 'https://ndlsearch.ndl.go.jp/'
-    : 'https://books.rakuten.co.jp/';
+  if (url.startsWith('https://ndlsearch.ndl.go.jp/')) return 'https://ndlsearch.ndl.go.jp/';
+  if (url.startsWith('https://cover.openbd.jp/')) return 'https://openbd.jp/';
+  if (/^https:\/\/books\.google\.(com|co\.jp)\//.test(url)) return 'https://books.google.com/';
+  return 'https://books.rakuten.co.jp/';
 }
 
 export interface BurnedCover {
   file: string;
   bytes: number;
   contentType: string | null;
+}
+
+/** 中身の SHA-256 (先頭 32 桁)。焼いたファイルの名前であり、同じ絵かどうかの判定でもある */
+function hashOf(bytes: Buffer): string {
+  return crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 32);
+}
+
+/**
+ * **「画像がありません」の板を掴んでいないか。**
+ *
+ * Google Books は絵を持っていない巻にも 200 で灰色の板を返す (bib/google.ts)。
+ * 大きさの足切りでは落ちない (9KB〜82KB ある) ので、中身そのもので弾く。
+ * ここを抜かすと、棚に「image not available」が並ぶ。
+ */
+export function isPlaceholderImage(bytes: Buffer): boolean {
+  return GOOGLE_PLACEHOLDER_COVERS.has(hashOf(bytes));
 }
 
 /** 画像をファイルとして焼く。名前は中身の SHA-256 なので、同じ絵は 1 つで済む */
@@ -55,7 +82,7 @@ export async function burnCover(
   contentType: string | null
 ): Promise<BurnedCover> {
   const ext = contentType?.includes('png') ? '.png' : contentType?.includes('webp') ? '.webp' : '.jpg';
-  const name = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 32) + ext;
+  const name = hashOf(bytes) + ext;
   const abs = path.join(cfg.dataDir, 'covers', name);
   // 同じ画像なら書き直さない (別の巻が同じ表紙ということはある)
   try {
@@ -70,6 +97,7 @@ export async function burnCover(
 export async function fetchAndBurn(cfg: Config, provider: string, url: string): Promise<BurnedCover | null> {
   const res = await fetchBinary(cfg, provider, url, { referer: refererFor(url) });
   if (res.status !== 200 || res.bytes.length < MIN_COVER_BYTES) return null;
+  if (isPlaceholderImage(res.bytes)) return null;
   return burnCover(cfg, res.bytes, res.contentType);
 }
 
@@ -112,11 +140,20 @@ export function writeCover(db: Db, input: WriteCoverInput): void {
 /**
  * 1 巻ぶんの表紙を取って焼く。取れた提供元の名前を返す。取れなければ null。
  *
- * 順番は **NDL → 楽天**。NDL は鍵が要らず、こちらから見て一番壊れにくい相手なので先に聞く。
- * 楽天は鍵と接続元 IP の登録が要る (= 壊れうる) ので、埋まらなかった分の受け皿に置く。
+ * 聞く順番は **ISBN で当たる道 → 書名で拾い直す道**。この 2 段が一番大事で、
+ * 提供元の並びはその中の話:
  *
- * **RakutenAuthError はここで握り潰さない。** 鍵や IP の間違いは黙って諦めてよい失敗ではなく、
- * 人が楽天の管理画面を直せば全部埋まるもの。呼び出し側まで上げて知らせる。
+ *   ISBN … NDL → 楽天 → openBD → Google     手元の本と**同じ版**の絵が付く
+ *   書名 … 楽天 → Google                     別の版の絵が付きうる (provider を分けて残す)
+ *
+ * ISBN の中の並びは「鍵が要らない順」ではなく**実測の当たりやすさ順**:
+ * NDL が半分、楽天が ISBN 直引きの本命、openBD は漫画ではまず当たらない (0.3%)、
+ * Google は ISBN 直引きだと 14% しか絵が付かない。
+ * ただし Google は**書名で引くと電子版の書影が出てくる**ので、最後の受け皿として効く。
+ *
+ * **`ProviderStopError` はここで握り潰さない。** 鍵や IP の間違い、1 日の上限は
+ * 黙って諦めてよい失敗ではなく、残りを回しても全部同じところで落ちるもの。
+ * 呼び出し側まで上げて、その回を打ち切らせる。
  */
 export async function fetchCover(
   db: Db,
@@ -137,45 +174,84 @@ export async function fetchCover(
     titleForFallback?: string;
   } = {}
 ): Promise<string | null> {
-  if (!opts.skipNdl) {
-    const url = ndlThumbnailUrl(isbn);
-    const burned = await fetchAndBurn(cfg, 'ndl-thumbnail', url);
-    if (burned) {
-      writeCover(db, { seriesId, volumeNo, provider: 'ndl', sourceUrl: url, isbn, burned });
-      return 'ndl';
-    }
-  }
-
-  if (!rakutenReady(cfg)) return null;
-
-  // 楽天の 1 冊を書影として焼く。焼けたら true
-  const burnFrom = async (rec: RakutenRecord | null, provider: string): Promise<boolean> => {
-    const imageUrl = rakutenImageUrl(rec?.imageUrl, cfg.bib.rakuten.imageSize);
+  /**
+   * 書影 URL を 1 つ焼いて covers に 1 行置く。焼けたら true。
+   *
+   * `provider` は covers に残す名前 (後から「どこの絵か」を見分けるため)、
+   * `bucket` は間引きの単位 (cache.ts の throttle)。**同じ置き場から取るものは
+   * 同じ bucket にまとめる** — `rakuten` と `rakuten-title` は同じ画像置き場なので分けない。
+   */
+  const burn = async (
+    imageUrl: string | null,
+    provider: string,
+    bucket: string,
+    recIsbn?: string | null
+  ): Promise<boolean> => {
     if (!imageUrl) return false;
-    const burned = await fetchAndBurn(cfg, 'rakuten-image', imageUrl);
+    const burned = await fetchAndBurn(cfg, bucket, imageUrl);
     if (!burned) return false;
     writeCover(db, {
-      seriesId, volumeNo, provider, sourceUrl: imageUrl, isbn: rec?.isbn ?? isbn, burned,
+      seriesId, volumeNo, provider, sourceUrl: imageUrl, isbn: recIsbn ?? isbn, burned,
     });
     return true;
   };
 
-  if (await burnFrom(await findRakutenByIsbn(db, cfg, isbn), 'rakuten')) return 'rakuten';
+  // ---- ISBN で当てる道。**手元の本と同じ版**の絵が付く ----------------------
+
+  if (!opts.skipNdl && (await burn(ndlThumbnailUrl(isbn), 'ndl', 'ndl-thumbnail'))) return 'ndl';
+
+  if (rakutenReady(cfg)) {
+    const rec = await findRakutenByIsbn(db, cfg, isbn);
+    const url = rakutenImageUrl(rec?.imageUrl, cfg.bib.rakuten.imageSize);
+    if (await burn(url, 'rakuten', 'rakuten-image', rec?.isbn)) return 'rakuten';
+  }
+
+  if (openbdReady(cfg)) {
+    if (await burn(await findOpenbdCover(db, cfg, isbn), 'openbd', 'openbd-image')) return 'openbd';
+  }
 
   /**
-   * ISBN で当たらない。**古い巻は楽天の在庫から消えている** ので、書名で拾い直す。
-   * 刷り直した版が載っていればそちらの書影が付く — 手元の本と絵が違いうるので、
+   * Google の ISBN 直引きで返るのは紙の版の書誌で、**128px のサムネイルしか持たない**
+   * ことが多い (bib/google.ts)。楽天の 600px と並ぶと目に見えて粗いので、
+   * 小さい絵は**取っておいて最後に回す** — 先に書名で大きい絵を探す。
+   */
+  let googleSmall: GoogleRecord | null = null;
+  if (googleReady(cfg)) {
+    const rec = await findGoogleByIsbn(db, cfg, isbn);
+    if (rec?.imageUrl && rec.large) {
+      if (await burn(rec.imageUrl, 'google', 'google-image', rec.isbn)) return 'google';
+    } else if (rec?.imageUrl) {
+      googleSmall = rec;
+    }
+  }
+
+  // ---- 書名で拾い直す道。**別の版の絵が付きうる** --------------------------
+
+  /**
+   * **古い巻は楽天の在庫から消えている** し、Google で絵を持っているのは電子版の方。
+   * どちらも刷り直した版・電子版の書影が付くことがあるので、手元の本と絵が違いうる。
    * provider を分けて後から見分けられるようにしておく。
    */
-  if (volumeNo === null) return null;
-  const s = db.getSeries(seriesId);
-  if (!s) return null;
-  const alt = await findRakutenByTitle(db, cfg, {
-    title: opts.titleForFallback ?? s.title,
-    author: s.author,
-    volume: volumeNo,
-  });
-  if (await burnFrom(alt, 'rakuten-title')) return 'rakuten-title';
+  const s = volumeNo === null ? null : db.getSeries(seriesId);
+  if (s && volumeNo !== null) {
+    const title = opts.titleForFallback ?? s.title;
+
+    if (rakutenReady(cfg)) {
+      const alt = await findRakutenByTitle(db, cfg, { title, author: s.author, volume: volumeNo });
+      const url = rakutenImageUrl(alt?.imageUrl, cfg.bib.rakuten.imageSize);
+      if (await burn(url, 'rakuten-title', 'rakuten-image', alt?.isbn)) return 'rakuten-title';
+    }
+
+    if (googleReady(cfg)) {
+      const alt = await findGoogleByTitle(db, cfg, { title, author: s.author, volume: volumeNo });
+      if (await burn(alt?.imageUrl ?? null, 'google-title', 'google-image', alt?.isbn)) return 'google-title';
+    }
+  }
+
+  // ---- 最後の 1 枚。**粗くても、無いよりは棚が埋まる** ----------------------
+  if (googleSmall?.imageUrl && (await burn(googleSmall.imageUrl, 'google', 'google-image', googleSmall.isbn))) {
+    return 'google';
+  }
 
   return null;
 }
@@ -219,6 +295,9 @@ export async function cacheThumbnail(
   const res = await fetchBinary(cfg, 'thumbnail', url, { referer: refererFor(url), minIntervalMs: 300 });
   if (res.status !== 200 || res.bytes.length < MIN_COVER_BYTES) return null;
   if (!String(res.contentType ?? '').startsWith('image/')) return null;
+  // 「画像がありません」の板は下見にも出さない。**書名の板が出た方がまし** —
+  // 灰色の板が並ぶと、絵のある候補と無い候補が見分けられなくなる
+  if (isPlaceholderImage(res.bytes)) return null;
 
   const [ext, type] =
     types.find(([, t]) => res.contentType?.includes(t.slice('image/'.length))) ?? types[0];

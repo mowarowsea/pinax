@@ -1,5 +1,6 @@
 import { yearOf } from '../published.js';
 import { seriesKeyOf } from '../volume.js';
+import { type GoogleRecord } from './google.js';
 import { ndlThumbnailUrl, type NdlRecord } from './ndl.js';
 import { rakutenImageUrl, type RakutenRecord } from './rakuten.js';
 
@@ -23,7 +24,7 @@ import { rakutenImageUrl, type RakutenRecord } from './rakuten.js';
  * (catalog.ts の SeriesIssues と同じ立場)。
  */
 
-export type CandidateProvider = 'ndl' | 'rakuten';
+export type CandidateProvider = 'ndl' | 'rakuten' | 'google';
 
 /** 書影の候補 1 冊。提供元が違っても画面からは同じ形に見える */
 export interface Candidate {
@@ -153,6 +154,27 @@ export function ndlCandidate(r: NdlRecord): Candidate {
   };
 }
 
+/**
+ * Google の候補。**書影 URL は記録の中で既に決まっている** (bib/google.ts の googleImageUrl) —
+ * 絵を持っている記録には 575px、書誌だけの記録には 128px のサムネイルが入る。
+ */
+export function googleCandidate(r: GoogleRecord): Candidate {
+  const split = splitCandidateTitle(r.title);
+  return {
+    provider: 'google',
+    title: r.title,
+    baseTitle: split.base || r.title,
+    volume: split.volume,
+    author: r.author,
+    publisher: r.publisher,
+    date: r.publishedDate,
+    year: yearOf(r.publishedDate),
+    isbn: r.isbn,
+    imageUrl: r.imageUrl,
+    link: r.link,
+  };
+}
+
 export function rakutenCandidate(r: RakutenRecord, imageSize: number): Candidate {
   const split = splitCandidateTitle(r.title);
   return {
@@ -188,8 +210,12 @@ function dateKeyOf(date: string | null): number {
   return Number(y[0]) * 100 + Math.min(Math.max(m ? Number(m[0]) : 1, 1), 12);
 }
 
-/** 提供元の優先。**書誌は NDL の方が信頼できる** (巻ごとの ISBN が素直に取れる) */
-const PROVIDER_RANK: Record<CandidateProvider, number> = { ndl: 0, rakuten: 1 };
+/**
+ * 提供元の優先。**書誌は NDL の方が信頼できる** (巻ごとの ISBN が素直に取れる)。
+ * Google を最後に置くのは、絵を持っている記録が電子版に偏っていて
+ * ISBN を持たないものが多いため (bib/google.ts)。
+ */
+const PROVIDER_RANK: Record<CandidateProvider, number> = { ndl: 0, rakuten: 1, google: 2 };
 
 /** 巻順 → 古い順 → NDL 優先。巻の読めないものは後ろへ回す */
 function byVolumeThenDate(a: Candidate, b: Candidate): number {

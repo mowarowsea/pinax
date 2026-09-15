@@ -27,7 +27,8 @@
     "providers": [
       "ndl",
       "rakuten",
-      "openbd"
+      "openbd",
+      "google"
     ],
     "rakuten": {
       "imageSize": 600

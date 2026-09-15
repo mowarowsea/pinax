@@ -652,7 +652,7 @@ function issueLineHtml(d) {
  */
 function pickLineHtml(d) {
   if (!d.pick) return '';
-  const src = { ndl: 'NDLサーチ', rakuten: '楽天ブックス' }[d.pick.scope] ?? 'NDL + 楽天';
+  const src = { ndl: 'NDLサーチ', rakuten: '楽天ブックス', google: 'Google Books' }[d.pick.scope] ?? '全部';
   return `<div class="pk-now">選んだシリーズ: ${esc(d.pick.title)}
     <span class="pk-tag">${esc(src)}</span>
     <button class="mini" id="pick-clear" style="margin-left:auto">自動に戻す</button>
@@ -832,6 +832,9 @@ const picker = {
 
 const volLabel = (n) => `第${String(n).padStart(2, '0')}巻`;
 
+/** 束に付く提供元の印。**openBD は並ばない** — ISBN 起点でしか引けないので候補を出せない */
+const PROVIDER_LABEL = { ndl: 'NDL', rakuten: '楽天', google: 'Google' };
+
 /** 候補の画像は pinax が中継する。NDL は Referer を見て弾くので、ブラウザからは引けない */
 const thumbUrl = (u) => '/api/bib/thumb?u=' + encodeURIComponent(u);
 
@@ -888,7 +891,7 @@ function pkGroupHtml(g) {
     <span class="pk-g-cover">${pkCover(g.coverUrl, g.title)}</span>
     <div class="pk-g-info">
       <div class="pk-g-title">${esc(g.title)}
-        ${g.providers.map((x) => `<span class="pk-tag">${x === 'rakuten' ? '楽天' : 'NDL'}</span>`).join('')}
+        ${g.providers.map((x) => `<span class="pk-tag">${PROVIDER_LABEL[x] ?? x}</span>`).join('')}
         ${on ? '<span class="pk-tag">選択中</span>' : ''}</div>
       <div class="pk-g-meta">${esc(meta)}</div>
       <div class="pk-g-acts">${acts.join('')}</div>
@@ -910,9 +913,10 @@ function renderPicker() {
       <input id="pk-q" value="${esc(picker.q)}" placeholder="作品名" autocomplete="off">
       <input id="pk-author" value="${esc(picker.author)}" placeholder="著者" autocomplete="off">
       <select class="sort" id="pk-provider">
-        <option value="all">NDL + 楽天</option>
+        <option value="all">全部に聞く</option>
         <option value="ndl">NDL だけ</option>
         <option value="rakuten">楽天だけ</option>
+        <option value="google">Google だけ</option>
       </select>
       <button class="btn primary" id="pk-go">探す</button>
     </div>
