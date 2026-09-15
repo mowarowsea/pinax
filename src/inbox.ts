@@ -53,13 +53,20 @@ function stripNoise(name: string): string {
 
 /**
  * 話数。`Busamen_Gachi_Fighter_01s ch05-07` `…最後のレストランch84-103` のように
- * ch / c を伴って書かれる。
+ * ch / c を伴うものと、`…遙か凍土のカナン_第006-014話_[2018-05-06～2019-04-03]` の
+ * ように日本語で書かれたものがある。
  *
  * **話を巻に倒さない。** 倒すと「第103巻」が棚に並び、欠番の数直線が壊れる
  * (docs/ARCHITECTURE.md「巻と話は別々の数直線で数える」)。巻の表記が別にあるなら
  * そちらを採り、話しか無ければ話として持つ。
+ *
+ * 日本語側だけ末尾に縛っていないのは、後ろに配信期間が付くから。そこで切ると
+ * 日付も一緒に落ちる。
  */
-const CHAPTER = /[_\s.-]*(?:ch|c)(\d{1,4})(?:[-~_](\d{1,4}))?\s*$/i;
+const CHAPTER = [
+  /[_\s.-]*(?:ch|c)(\d{1,4})(?:[-~_](\d{1,4}))?\s*$/i,
+  /[_\s.-]*第(\d{1,4})(?:[-~_](\d{1,4}))?話/,
+];
 
 /**
  * 巻数の後ろに付く版・品質の印。実物から拾ったもの:
@@ -94,13 +101,15 @@ export function splitInboxName(stem: string): InboxName {
   let s = stem;
   let chapter: { from: number; to: number } | null = null;
 
-  const ch = s.match(CHAPTER);
-  if (ch && ch.index !== undefined) {
+  for (const re of CHAPTER) {
+    const ch = s.match(re);
+    if (!ch || ch.index === undefined) continue;
     const from = Number(ch[1]);
     const to = ch[2] ? Number(ch[2]) : from;
     if (from >= 1 && to >= from) {
       chapter = { from, to };
       s = s.slice(0, ch.index);
+      break;
     }
   }
 
@@ -146,6 +155,10 @@ export interface InboxWork {
  *
  * 蔵書を読むのと同じ `parseFilename` を通す。区切りが `_` のものがあるので、
  * 作品名の前後に残る区切りだけ落とす (`_私の魔法の先生は…_` → `私の魔法の先生は…`)。
+ *
+ * **渡すのは巻・話を剥がした後の名前。** 剥がす前を渡すと `parseFilename` が
+ * 知らない書き方 (`ch84-103`) が作品名に残り、`最後のレストランch84-103` という
+ * フォルダが掘られる (2026-09-15 の計画で 2 件)。
  */
 function readJapaneseName(stem: string): { title: string; author: string | null } | null {
   if (!HAS_JAPANESE.test(stem)) return null;
@@ -183,7 +196,7 @@ export function foldInbox(dir: string): InboxWork[] {
       works.set(key, {
         key,
         label: work.replace(/[_\s.-]+$/, ''),
-        parsed: readJapaneseName(stem),
+        parsed: readJapaneseName(work),
         files: [],
       });
     }
@@ -392,9 +405,13 @@ export function planMoves(
     const via: Move['via'] = byYomi ? 'yomi' : byTitle ? 'title' : own ? 'file' : 'answer';
 
     for (const f of work.files) {
+      // 巻も話も読めなかったなら**単位も渡さない**。渡すと planName の中で
+      // parseFilename が読み直した数字に、こちらの「巻」が被さって化ける
+      // (`第006-014話` が `第06-14巻` になっていた — 2026-09-15)。
+      const unit = f.from === null ? undefined : f.unit;
       const plan = fitPath(
         shelfRoot,
-        planName(f.name, { title, author, volumeFrom: f.from, volumeTo: f.to, unit: f.unit }, { folder: true }),
+        planName(f.name, { title, author, volumeFrom: f.from, volumeTo: f.to, unit }, { folder: true }),
         { title, author }
       );
       const folder = found?.folder ?? plan.folder ?? '';

@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inboxKeyOf, splitInboxName, suspectAnswers, type Answer } from './inbox.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { foldInbox, inboxKeyOf, splitInboxName, suspectAnswers, type Answer } from './inbox.js';
 
 /**
  * 受け入れトレイの読み方。**ここに並ぶのは全部、実物 3056 ファイルで踏んだ形**
@@ -45,6 +48,17 @@ test('ch / c で書かれた話数は話のまま持つ', () => {
   assert.deepEqual([r.from, r.to, r.unit], [84, 103, '話']);
 });
 
+/**
+ * 実際に踏んだ: 日本語の「第006-014話」を読めず、planName の中で parseFilename が
+ * 読み直した 6-14 に「巻」が被さって `第06-14巻` になっていた。後ろの配信期間ごと
+ * 落ちるように、日本語側は末尾に縛っていない。
+ */
+test('日本語で書かれた話数も話のまま持つ', () => {
+  const r = splitInboxName('[芝村裕吏×橋本晴一]_遙か凍土のカナン_第006-014話_[2018-05-06～2019-04-03]');
+  assert.equal(r.work, '[芝村裕吏×橋本晴一]_遙か凍土のカナン');
+  assert.deepEqual([r.from, r.to, r.unit], [6, 14, '話']);
+});
+
 test('巻と話が両方あるなら巻を採る', () => {
   const r = splitInboxName('Busamen_Gachi_Fighter_01s ch05-07');
   assert.equal(r.work, 'Busamen_Gachi_Fighter');
@@ -63,6 +77,37 @@ test('年号を巻数と読まない', () => {
 
 test('共著の × と x は同じキーになる', () => {
   assert.equal(inboxKeyOf('SPY×FAMILY'), inboxKeyOf('SPYxFAMILY'));
+});
+
+// ---- 畳む ------------------------------------------------------------------
+
+/** 名前だけのファイルを並べたトレイを作る */
+function tray(names: string[]): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pinax-inbox-'));
+  for (const n of names) fs.writeFileSync(path.join(dir, n), '');
+  return dir;
+}
+
+/**
+ * 実際に踏んだ (2026-09-15): 話数を剥がす前の名前を `parseFilename` に渡していて、
+ * `最後のレストランch84-103` という作品フォルダが掘られる計画になっていた。
+ */
+test('日本語ファイル名の作品名に巻・話が残らない', () => {
+  const works = foldInbox(tray([
+    '[藤栄道彦]_最後のレストランch84-103.zip',
+    '[あれっくす]_私の魔法の先生は魔法が使えない_第01-02巻.rar',
+  ]));
+  assert.deepEqual(
+    works.map((w) => w.parsed?.title).sort(),
+    ['最後のレストラン', '私の魔法の先生は魔法が使えない']
+  );
+});
+
+/** 頭の宣伝を落とさないと、同じ作品を 2 つのキーで外へ聞くことになる */
+test('アップローダの宣伝を落としてから畳む', () => {
+  const works = foldInbox(tray(['MG-Zip.Com-One_Punch-man_15_LQ.rar', 'One_Punch-man_16.rar']));
+  assert.equal(works.length, 1);
+  assert.equal(works[0].files.length, 2);
 });
 
 // ---- 外へ聞いた答えの検算 --------------------------------------------------
