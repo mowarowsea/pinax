@@ -1,4 +1,4 @@
-import { completedOf, type Db, type SeriesRow, type VolumeRow } from './db.js';
+import { completedOf, type Db, type SeriesPick, type SeriesRow, type VolumeRow } from './db.js';
 import { parseFilename, seriesLabel } from './naming.js';
 import { parseItem, seriesKeyOf } from './volume.js';
 import { publishedOf, shelfStateOf, type PublishedInfo, type ShelfState } from './published.js';
@@ -288,6 +288,8 @@ export interface VolumeDetail {
   completed: boolean;
   present: boolean;
   coverUrl: string | null;
+  /** その表紙を人が選んだか。**自動の取り直しでは上書きされない** 印 */
+  coverPinned: boolean;
   /**
    * この巻に別々のファイルが 2 本以上ぶら下がっている。分割書庫の続きは数えない。
    * **どちらが正しいかは言わない** — 別版として両方置いているのか捨て漏れなのかは人が決める
@@ -311,6 +313,12 @@ export interface SeriesDetail extends SeriesSummary {
    * 詳しくは published.ts の頭
    */
   published: PublishedInfo;
+  /**
+   * 人が選んだ書誌シリーズ。null なら書名と著者から自動で当てている。
+   * **画面はこれを出して「今どの系列を見ているか」を言えるようにする** —
+   * 血界戦線のように並走するシリーズがある作品では、そこが分からないと直しようがない
+   */
+  pick: SeriesPick | null;
   volumes: VolumeDetail[];
   /** 巻数を読めなかったファイル。欠番には効かないが、持ってはいる */
   loose: VolumeDetail['files'];
@@ -340,12 +348,15 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
   });
 
   const covers = db.raw
-    .prepare('SELECT id, volume_no FROM covers WHERE series_id = ?')
-    .all(id) as { id: number; volume_no: number | null }[];
-  const coverByVol = new Map(covers.filter((c) => c.volume_no !== null).map((c) => [Number(c.volume_no), Number(c.id)]));
+    .prepare('SELECT id, volume_no, pinned FROM covers WHERE series_id = ?')
+    .all(id) as { id: number; volume_no: number | null; pinned: number }[];
+  const coverByVol = new Map(
+    covers.filter((c) => c.volume_no !== null).map((c) => [Number(c.volume_no), c])
+  );
 
   const details: VolumeDetail[] = volumes.map((v) => {
-    const coverId = v.volumeFrom === v.volumeTo ? coverByVol.get(v.volumeFrom) : undefined;
+    const cover = v.volumeFrom === v.volumeTo ? coverByVol.get(v.volumeFrom) : undefined;
+    const coverId = cover?.id;
     const mine = fileRows.filter((r) => Number(r.volume_id) === v.id && Number(r.present) === 1);
     return {
       id: v.id,
@@ -358,6 +369,7 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
       completed: v.completed,
       present: v.present,
       coverUrl: coverId ? `/api/covers/${coverId}` : null,
+      coverPinned: Number(cover?.pinned ?? 0) === 1,
       duplicate: new Set(mine.map(fileBaseOf)).size > 1,
       files: fileRows.filter((r) => Number(r.volume_id) === v.id).map(toFile),
     };
@@ -370,6 +382,7 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
   return {
     ...summary,
     published: publishedOf(db, id, summary.holdings, s.enrichedAt),
+    pick: db.getSeriesPick(id),
     volumes: details,
     loose: fileRows.filter((r) => r.volume_id === null).map(toFile),
     bib: bibRow ? { ...bibRow, raw: JSON.parse(String(bibRow.raw ?? '{}')) } : null,

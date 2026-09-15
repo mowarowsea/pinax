@@ -133,14 +133,18 @@ export async function cachedFetch(db: Db, cfg: Config, opts: FetchOptions): Prom
  * (2026-09-12 に確認。UA は何を名乗っても関係なく、Referer だけで通る)。
  * ここを落とすと表紙が 1 枚も焼けないまま「取れなかった」とだけ記録されて、
  * 原因が見えないまま蔵書が表紙無しで並ぶ。
+ *
+ * `minIntervalMs` は間引きの上書き。**人が画面の前で待っている時だけ短くする** —
+ * 表紙を選ぶ画面は候補を数枚まとめて出すので、巡回と同じ 1.2 秒で刻むと
+ * 一覧が出るまでに十数秒かかる。焼いた後は二度と聞かないので、回数は増えない。
  */
 export async function fetchBinary(
   cfg: Config,
   provider: string,
   url: string,
-  opts: { referer?: string } = {}
+  opts: { referer?: string; minIntervalMs?: number } = {}
 ): Promise<{ status: number; bytes: Buffer; contentType: string | null }> {
-  await throttle(provider, cfg.bib.minIntervalMs);
+  await throttle(provider, opts.minIntervalMs ?? cfg.bib.minIntervalMs);
   const headers: Record<string, string> = {
     'User-Agent': DEFAULT_UA,
     Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',

@@ -252,6 +252,50 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .mini:hover { border-color: var(--brand); color: var(--brand); }
 .more { font-size: 11.5px; color: var(--ink-3); }
 
+/* ---- 表紙を選ぶ ----
+   詳細の板の中で中身だけ差し替える。もう 1 枚重ねると、Android の戻るで
+   どちらが閉じるのか分からなくなる (詳細の板は履歴を 1 つ積んで開いている) */
+.pk-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.pk-for { font-size: 13px; color: var(--ink-2); }
+.pk-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.pk-form input { flex: 1 1 180px; min-width: 140px; border: 1px solid var(--line); background: var(--bg);
+  border-radius: 8px; padding: 8px 12px; }
+.pk-form input:focus { outline: 2px solid var(--brand-soft); border-color: var(--brand); }
+.pk-note { font-size: 12px; color: var(--ink-3); margin-bottom: 12px; }
+.pk-note.warn { color: var(--gap); }
+.pk-now { margin: 0 0 14px; padding: 9px 12px; border-radius: 8px; background: var(--brand-soft);
+  color: var(--brand); font-size: 13px; font-weight: 600; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.pk-now small { display: block; font-weight: 400; font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+
+.pk-group { display: flex; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.pk-g-cover { flex: none; width: 64px; aspect-ratio: 2/3; border-radius: 5px; overflow: hidden;
+  background: var(--brand-soft); display: grid; place-items: center; }
+.pk-g-cover img { width: 100%; height: 100%; object-fit: cover; }
+.pk-g-info { flex: 1 1 auto; min-width: 0; }
+.pk-g-title { font-size: 14px; font-weight: 600; line-height: 1.35; word-break: break-word; }
+.pk-g-meta { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+.pk-g-acts { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
+.pk-tag { font-size: 10px; font-weight: 600; border: 1px solid var(--line); border-radius: 4px;
+  padding: 1px 5px; color: var(--ink-3); vertical-align: 2px; margin-left: 6px; }
+.pk-group.on { background: var(--brand-soft); border-radius: 8px; padding: 12px; }
+
+.pk-g-cover, .pk-item .cover { position: relative; }
+/* 書影の無い候補は書名が板に出る。64px の枠に長い書名が来るので、ここだけ詰める */
+.pk-g-cover .none { font-size: 9px; line-height: 1.3; padding: 4px; max-height: 100%; overflow: hidden; }
+.pk-item .none { font-size: 10px; }
+.pk-g-cover img.over, .pk-item .cover img.over { position: absolute; inset: 0; }
+.pk-items { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  padding: 4px 0 14px; }
+.pk-item { display: flex; flex-direction: column; gap: 4px; }
+.pk-item .cover { aspect-ratio: 2/3; }
+.pk-item .lbl { font-size: 11px; font-weight: 600; text-align: center; }
+.pk-item .sub { font-size: 10px; color: var(--ink-3); text-align: center; word-break: break-word; }
+
+/* 表紙そのものを押して選び直せるようにする。span を button にしただけなので枠を消す */
+button.cover { border: 0; padding: 0; font: inherit; }
+.vol button.cover:hover { outline: 2px solid var(--brand); outline-offset: 2px; }
+.badge.pinned { background: var(--ok); }
+
 .empty { text-align: center; color: var(--ink-3); padding: 60px 20px; }
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 80;
@@ -448,10 +492,17 @@ function volHtml(v) {
     : `<a class="dl" href="/api/files/${f.id}/download">保存 (1/${v.files.length})</a>`;
   const marks = [];
   if (v.duplicate) marks.push('<span class="badge warn">複</span>');
+  if (v.coverPinned) marks.push('<span class="badge pinned">選</span>');
   if (v.completed) marks.push('<span class="badge done">完</span>');
+  // 単巻なら表紙そのものが「選び直す」の入口。合本 (範囲もの) は 1 巻に結び付かないので押せない
+  const single = v.volumeFrom === v.volumeTo;
+  const inner = `${coverHtml(v.coverUrl, v.label)}
+      ${marks.length ? `<span class="badges">${marks.join('')}</span>` : ''}`;
+  const cover = single
+    ? `<button class="cover" data-cover-vol="${v.volumeFrom}" title="この巻の表紙を選び直す">${inner}</button>`
+    : `<span class="cover">${inner}</span>`;
   return `<div class="vol${v.duplicate ? ' dup' : ''}">
-    <span class="cover">${coverHtml(v.coverUrl, v.label)}
-      ${marks.length ? `<span class="badges">${marks.join('')}</span>` : ''}</span>
+    ${cover}
     <span class="lbl">${esc(v.label)}${tags.length ? ' ' + esc(tags.join(',')) : ''}</span>
     <span class="sz">${mb(size)}</span>
     ${dl}
@@ -548,13 +599,15 @@ function detailHtml(d) {
       ${shelfLineHtml(d)}
       ${issueLineHtml(d)}
       ${completedSwitchHtml(d)}
+      ${pickLineHtml(d)}
       <div class="d-actions">
         <button class="btn" id="enrich" data-id="${d.id}">書誌と表紙を取り直す</button>
+        <button class="btn" id="pick-open">表紙を探して選ぶ</button>
         ${caps.reveal.available ? '<button class="btn pc-only" id="reveal">エクスプローラで開く</button>' : ''}
       </div>
     </div>
   </div>
-  <h3 class="sec">巻</h3>
+  <h3 class="sec">巻 <span style="font-weight:400">— 表紙を押すとその巻だけ選び直せます</span></h3>
   <div class="vols">${line.join('')}</div>
   ${dupSectionHtml(d)}
   ${d.loose.length ? `<h3 class="sec">巻数を読めなかったファイル</h3>
@@ -574,6 +627,22 @@ function issueLineHtml(d) {
   if (is.unreadableFiles) parts.push(`何巻か読めないファイル ${is.unreadableFiles}点`);
   return `<div class="issueline">要確認 — ${esc(parts.join(' / '))}
     <small>どれを残すかは中身を見て決めてください。pinax はファイルを消しません</small></div>`;
+}
+
+/**
+ * 今どの書誌シリーズを見ているか。
+ *
+ * **選んでいない時は何も出さない。** 9 割の作品は自動で当たっていて、
+ * そこに毎回「自動です」と書いても場所を食うだけ。出すのは人が選んだ時だけにして、
+ * 「これは自分で決めたものだ」と分かるようにする。
+ */
+function pickLineHtml(d) {
+  if (!d.pick) return '';
+  const src = { ndl: 'NDLサーチ', rakuten: '楽天ブックス' }[d.pick.scope] ?? 'NDL + 楽天';
+  return `<div class="pk-now">選んだシリーズ: ${esc(d.pick.title)}
+    <span class="pk-tag">${esc(src)}</span>
+    <button class="mini" id="pick-clear" style="margin-left:auto">自動に戻す</button>
+    <small>この作品は書名から自動で当てず、この系列だけを見ます</small></div>`;
 }
 
 /**
@@ -630,6 +699,8 @@ function dupSectionHtml(d) {
  *                  (この時だけは戻るで pinax を出る — それが正しい戻り先)
  *   mode 'keep'  … 中身の貼り直し。履歴もスクロール位置も動かさない
  */
+let lastDetail = null;
+
 async function openDetail(id, mode = 'push') {
   const refresh = mode === 'keep';
   if (!refresh) {
@@ -643,6 +714,7 @@ async function openDetail(id, mode = 'push') {
 
   const top = $('detail').scrollTop;
   const d = await api('/api/series/' + id);
+  lastDetail = d;
   $('sheet-title').textContent = d.label || d.title;
   $('detail').innerHTML = detailHtml(d);
   $('detail').scrollTop = refresh ? top : 0;
@@ -690,6 +762,23 @@ function wireDetail(d) {
     }
   });
 
+  // 表紙を探して選ぶ。作品まるごとと、巻 1 つぶんの 2 つの入口がある
+  $('pick-open')?.addEventListener('click', () => openPicker(null));
+  $('detail').querySelectorAll('button[data-cover-vol]').forEach((b) => {
+    b.addEventListener('click', () => openPicker(Number(b.dataset.coverVol)));
+  });
+
+  // 選んだシリーズを外して自動へ戻す。**表紙はそのまま残す** — 次の取り直しで貼り替わる
+  $('pick-clear')?.addEventListener('click', async () => {
+    try {
+      await api(`/api/series/${id}/cover-pick`, { method: 'DELETE' });
+      toast('自動に戻しました。「書誌と表紙を取り直す」で当て直せます', 5000);
+      await openDetail(id, 'keep');
+    } catch (e) {
+      toast('失敗: ' + e.message, 5000);
+    }
+  });
+
   // エクスプローラ。PC から見ている時しかボタンが無い (caps.reveal)
   $('reveal')?.addEventListener('click', () => reveal(id, null));
   $('detail').querySelectorAll('button[data-reveal-file]').forEach((b) => {
@@ -707,6 +796,254 @@ async function reveal(id, fileId) {
     toast('エクスプローラで開きました');
   } catch (e) {
     toast('開けません: ' + e.message, 5000);
+  }
+}
+
+// ---- 表紙を選ぶ ---------------------------------------------------------
+
+/**
+ * **同じ書名で別のシリーズが並走している作品を、人が直す場所。**
+ *
+ * 血界戦線を NDL に聞くと、無印 / Back 2 Back / Beat 3 Peat が 1 つの答えに混ざって返る。
+ * 機械には手元の棚がどれなのか分からないので、束ねて並べて「これ」と選ばせる
+ * (src/bib/candidates.ts の頭)。
+ *
+ * 板はもう 1 枚重ねない。**詳細の中身だけを差し替える** — 詳細は履歴を 1 つ積んで
+ * 開いているので、上にもう 1 枚乗せると Android の戻るでどちらが閉じるのか分からなくなる。
+ */
+const picker = {
+  seriesId: null, volume: null, q: '', author: '', provider: 'all',
+  groups: [], open: new Set(), pick: null, note: '', warn: false, body: '',
+};
+
+const volLabel = (n) => `第${String(n).padStart(2, '0')}巻`;
+
+/** 候補の画像は pinax が中継する。NDL は Referer を見て弾くので、ブラウザからは引けない */
+const thumbUrl = (u) => '/api/bib/thumb?u=' + encodeURIComponent(u);
+
+/** 書名の板を敷いて、その上に下見の画像を重ねる。取れなければ img だけ消えて板が残る */
+function pkCover(url, fallback) {
+  const none = `<span class="none">${esc(fallback)}</span>`;
+  return url ? `${none}<img loading="lazy" class="over" src="${thumbUrl(url)}" alt="" onerror="this.remove()">` : none;
+}
+
+function pkItemHtml(c) {
+  // 巻を指定して開いている時は、候補が何巻であろうとその巻へ貼る
+  const target = picker.volume !== null ? picker.volume : c.volume;
+  const label = c.volume === null ? '巻なし' : volLabel(c.volume);
+  const use = (t, label) =>
+    `<button class="mini" data-use="${esc(c.imageUrl)}" data-provider="${esc(c.provider)}"
+      data-isbn="${esc(c.isbn ?? '')}" data-target="${t === null ? '' : t}">${label}</button>`;
+  /**
+   * 巻に貼る口と、棚に並ぶ 1 枚 (代表表紙) に貼る口を両方出す。
+   * **代表は「持っている中で一番若い巻」から勝手に決まる** ので、第1-2巻が合本の作品では
+   * 第4巻の絵が棚に並ぶ。そこを手で直せる口が要る
+   */
+  const btn = !c.imageUrl
+    ? '<span class="sub">書影なし</span>'
+    : target === null
+      ? use(null, '代表表紙にする')
+      : use(target, volLabel(target) + 'に使う') + (picker.volume === null ? use(null, '代表にする') : '');
+  return `<div class="pk-item">
+    <span class="cover">${pkCover(c.imageUrl, label)}</span>
+    <span class="lbl">${esc(label)}</span>
+    <span class="sub">${esc(c.title)}</span>
+    <span class="sub">${esc(c.date ?? '')}</span>
+    ${btn}
+  </div>`;
+}
+
+function pkGroupHtml(g) {
+  const on = picker.pick && picker.pick.groupKey === g.key;
+  const years = g.firstYear
+    ? (g.lastYear && g.lastYear !== g.firstYear ? `${g.firstYear}〜${g.lastYear}年` : `${g.firstYear}年`)
+    : '';
+  const vols = g.volumeMax
+    ? `${volLabel(g.volumes[0])}〜${volLabel(g.volumeMax)} (${g.volumes.length}冊)`
+    : '巻の並びなし';
+  const meta = [vols, years, g.publisher, `${g.count}件`].filter(Boolean).join(' · ');
+  const acts = [];
+  // 巻を指定して開いている時は「シリーズごと乗り換える」を出さない。
+  // 押したつもりの無い作品全体の貼り直しが走るのは驚きが大きい
+  if (picker.volume === null) {
+    acts.push(`<button class="btn primary" data-pick="${esc(g.key)}">このシリーズにする</button>`);
+  }
+  acts.push(`<button class="mini" data-open="${esc(g.key)}">${picker.open.has(g.key) ? '巻を閉じる' : '巻を見る'}</button>`);
+
+  return `<div class="pk-group${on ? ' on' : ''}">
+    <span class="pk-g-cover">${pkCover(g.coverUrl, g.title)}</span>
+    <div class="pk-g-info">
+      <div class="pk-g-title">${esc(g.title)}
+        ${g.providers.map((x) => `<span class="pk-tag">${x === 'rakuten' ? '楽天' : 'NDL'}</span>`).join('')}
+        ${on ? '<span class="pk-tag">選択中</span>' : ''}</div>
+      <div class="pk-g-meta">${esc(meta)}</div>
+      <div class="pk-g-acts">${acts.join('')}</div>
+    </div>
+  </div>
+  ${picker.open.has(g.key) ? `<div class="pk-items">${g.items.map(pkItemHtml).join('')}</div>` : ''}`;
+}
+
+function renderPicker() {
+  const forWhat = picker.volume === null
+    ? '手元の棚に合う系列を選ぶと、書誌と表紙をまとめて貼り直します'
+    : `${volLabel(picker.volume)}の表紙だけを差し替えます`;
+  $('detail').innerHTML = `
+    <div class="pk-head">
+      <button class="btn" id="pk-back">← 作品へ戻る</button>
+      <span class="pk-for">${forWhat}</span>
+    </div>
+    <div class="pk-form">
+      <input id="pk-q" value="${esc(picker.q)}" placeholder="作品名" autocomplete="off">
+      <input id="pk-author" value="${esc(picker.author)}" placeholder="著者 (NDL に添える)" autocomplete="off">
+      <select class="sort" id="pk-provider">
+        <option value="all">NDL + 楽天</option>
+        <option value="ndl">NDL だけ</option>
+        <option value="rakuten">楽天だけ</option>
+      </select>
+      <button class="btn primary" id="pk-go">探す</button>
+    </div>
+    ${picker.note ? `<div class="pk-note${picker.warn ? ' warn' : ''}">${esc(picker.note)}</div>` : ''}
+    ${picker.body}`;
+  $('pk-provider').value = picker.provider;
+  wirePicker();
+}
+
+async function openPicker(volume = null) {
+  const d = lastDetail;
+  if (!d) return;
+  picker.seriesId = d.id;
+  picker.volume = volume;
+  // 前に選んだ時の検索語があればそれを出す。無ければ棚の作品名と著者
+  picker.q = (d.pick && d.pick.queryTitle) || d.title;
+  picker.author = d.pick ? (d.pick.queryAuthor || '') : (d.author || '');
+  picker.provider = 'all';
+  picker.groups = [];
+  picker.open = new Set();
+  picker.pick = d.pick ?? null;
+  $('sheet-title').textContent = `${d.label || d.title} — 表紙を選ぶ`;
+  await runPickerSearch();
+}
+
+async function runPickerSearch(refresh) {
+  picker.note = '';
+  picker.warn = false;
+  picker.body = '<div class="empty"><span class="spin"></span> 外に聞いています</div>';
+  renderPicker();
+
+  try {
+    const p = new URLSearchParams({ q: picker.q, author: picker.author, provider: picker.provider });
+    if (refresh) p.set('refresh', '1');
+    const r = await api(`/api/series/${picker.seriesId}/cover-search?` + p);
+    picker.pick = r.pick;
+    picker.groups = r.groups;
+
+    // 開いておくものを決める。選択中のものがあればそれ、無ければ一番巻の揃っているもの。
+    // **巻を指定して来た時は必ず 1 つ開く** — 候補を見に来たのに畳まれていては用を成さない
+    const chosen = r.groups.find((g) => r.pick && g.key === r.pick.groupKey);
+    const head = chosen ?? r.groups[0];
+    const openHead = picker.volume !== null || r.groups.length === 1;
+    picker.open = new Set(openHead && head ? [head.key] : chosen ? [chosen.key] : []);
+
+    const errs = (r.errors ?? []).map((e) => `${e.provider}: ${e.message}`).join(' / ');
+    picker.warn = Boolean(errs);
+    picker.note = r.groups.length
+      ? `${r.groups.length} 系列が見つかりました。手元の棚と中身が合っているものを選んでください${errs ? ` — ${errs}` : ''}`
+      : `候補が見つかりませんでした${errs ? ` — ${errs}` : ''}`;
+    picker.body = r.groups.length
+      ? r.groups.map(pkGroupHtml).join('')
+      : '<div class="empty">検索語を変えて探し直してください</div>';
+  } catch (e) {
+    picker.warn = true;
+    picker.note = '失敗: ' + e.message;
+    picker.body = '';
+  }
+  renderPicker();
+}
+
+function wirePicker() {
+  $('pk-back').addEventListener('click', () => openDetail(picker.seriesId, 'keep'));
+  $('pk-go').addEventListener('click', () => {
+    picker.q = $('pk-q').value.trim();
+    picker.author = $('pk-author').value.trim();
+    picker.provider = $('pk-provider').value;
+    runPickerSearch();
+  });
+  for (const id of ['pk-q', 'pk-author']) {
+    $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') $('pk-go').click(); });
+  }
+
+  $('detail').querySelectorAll('button[data-open]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.open;
+      if (picker.open.has(k)) picker.open.delete(k);
+      else picker.open.add(k);
+      picker.body = picker.groups.map(pkGroupHtml).join('');
+      renderPicker();
+    });
+  });
+
+  $('detail').querySelectorAll('button[data-pick]').forEach((b) => {
+    b.addEventListener('click', () => choosePickedGroup(b));
+  });
+  $('detail').querySelectorAll('button[data-use]').forEach((b) => {
+    b.addEventListener('click', () => useOneCover(b));
+  });
+}
+
+/**
+ * シリーズごと乗り換える。**書誌も表紙も貼り直す** ので、持っている巻の数だけ外を叩く。
+ * 相手には間を空けて聞く決まりなので 10 巻で十数秒かかる — 押した後は必ず印を出す。
+ */
+async function choosePickedGroup(btn) {
+  const key = btn.dataset.pick;
+  const g = picker.groups.find((x) => x.key === key);
+  if (!g) return;
+
+  const all = $('detail').querySelectorAll('button[data-pick], button[data-use]');
+  all.forEach((b) => { b.disabled = true; });
+  btn.innerHTML = '<span class="spin"></span> 貼り直しています';
+  try {
+    const r = await api(`/api/series/${picker.seriesId}/cover-pick`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scope: picker.provider, groupKey: key, title: g.title,
+        queryTitle: picker.q, queryAuthor: picker.author,
+      }),
+    });
+    toast(`${g.title} にしました — 書誌 ${r.result.bibWritten} / 表紙 ${r.result.coversWritten} 枚`, 5000);
+    await openDetail(picker.seriesId, 'keep');
+    await loadGrid();
+  } catch (e) {
+    toast('失敗: ' + e.message, 6000);
+    all.forEach((b) => { b.disabled = false; });
+    btn.textContent = 'このシリーズにする';
+  }
+}
+
+/** 1 巻 (または代表表紙) の絵だけ差し替える。書誌は触らない */
+async function useOneCover(btn) {
+  const target = btn.dataset.target === '' ? null : Number(btn.dataset.target);
+  const before = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>';
+  try {
+    await api(`/api/series/${picker.seriesId}/cover`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        volume: target, provider: btn.dataset.provider,
+        imageUrl: btn.dataset.use, isbn: btn.dataset.isbn || null,
+      }),
+    });
+    toast(target === null ? '代表表紙にしました' : `${volLabel(target)}の表紙にしました`);
+    await loadGrid();
+    // 巻を指定して来たなら用は済んだ。作品へ戻って結果を見せる
+    if (picker.volume !== null) { await openDetail(picker.seriesId, 'keep'); return; }
+    btn.disabled = false;
+    btn.textContent = before;
+  } catch (e) {
+    toast('失敗: ' + e.message, 5000);
+    btn.disabled = false;
+    btn.textContent = before;
   }
 }
 

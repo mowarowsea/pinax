@@ -1,14 +1,9 @@
-import crypto from 'node:crypto';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import type { Config } from '../config.js';
 import type { Db } from '../db.js';
-import { fetchBinary } from './cache.js';
+import { fetchCover, refreshSeriesCover } from './covers.js';
 import { byVolume, ndlThumbnailUrl, searchNdl, type NdlRecord } from './ndl.js';
-import {
-  findRakutenByIsbn, findRakutenByTitle, rakutenImageUrl, rakutenReady,
-  RakutenAuthError, type RakutenRecord,
-} from './rakuten.js';
+import { applyPick } from './pick.js';
+import { rakutenReady, RakutenAuthError } from './rakuten.js';
 
 /**
  * 蔵書の 1 作品に、外から取った書誌と書影を貼る。
@@ -45,133 +40,9 @@ export interface EnrichResult {
   coverMissed: number[];
   cached: boolean;
   stale: boolean;
+  /** 人が選んだシリーズを使った時、その書名。null なら書名と著者から自動で当てた */
+  picked: string | null;
   error: string | null;
-}
-
-/** 画像として成立している最低の大きさ。エラーページや 1x1 を掴まないための足切り */
-const MIN_COVER_BYTES = 2000;
-
-async function burnCover(
-  cfg: Config,
-  bytes: Buffer,
-  contentType: string | null
-): Promise<{ file: string; bytes: number }> {
-  const ext = contentType?.includes('png') ? '.png' : contentType?.includes('webp') ? '.webp' : '.jpg';
-  const name = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 32) + ext;
-  const abs = path.join(cfg.dataDir, 'covers', name);
-  // 同じ画像なら書き直さない (別の巻が同じ表紙ということはある)
-  try {
-    await fs.access(abs);
-  } catch {
-    await fs.writeFile(abs, bytes);
-  }
-  return { file: name, bytes: bytes.length };
-}
-
-/** covers に 1 行置く。画像は既に焼いてある前提 */
-function writeCover(
-  db: Db,
-  seriesId: number,
-  volumeNo: number | null,
-  provider: string,
-  sourceUrl: string,
-  isbn: string | null,
-  burned: { file: string; bytes: number },
-  contentType: string | null
-): void {
-  db.raw
-    .prepare(
-      `INSERT INTO covers (series_id, volume_no, provider, source_url, isbn, file, bytes, content_type, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(series_id, volume_no) DO UPDATE SET
-         provider = excluded.provider, source_url = excluded.source_url, isbn = excluded.isbn,
-         file = excluded.file, bytes = excluded.bytes, content_type = excluded.content_type`
-    )
-    .run(seriesId, volumeNo, provider, sourceUrl, isbn, burned.file, burned.bytes, contentType, new Date().toISOString());
-}
-
-/**
- * 1 巻ぶんの表紙を取って焼く。取れた提供元の名前を返す。取れなければ null。
- *
- * 順番は **NDL → 楽天**。NDL は鍵が要らず、こちらから見て一番壊れにくい相手なので先に聞く。
- * 楽天は鍵と接続元 IP の登録が要る (= 壊れうる) ので、埋まらなかった分の受け皿に置く。
- *
- * **RakutenAuthError はここで握り潰さない。** 鍵や IP の間違いは黙って諦めてよい失敗ではなく、
- * 人が楽天の管理画面を直せば全部埋まるもの。呼び出し側まで上げて知らせる。
- */
-async function fetchCover(
-  db: Db,
-  cfg: Config,
-  seriesId: number,
-  volumeNo: number | null,
-  isbn: string,
-  opts: { skipNdl?: boolean } = {}
-): Promise<string | null> {
-  if (!opts.skipNdl) {
-    const url = ndlThumbnailUrl(isbn);
-    // Referer が無いと 403。詳しくは bib/cache.ts の fetchBinary
-    const res = await fetchBinary(cfg, 'ndl-thumbnail', url, { referer: 'https://ndlsearch.ndl.go.jp/' });
-    if (res.status === 200 && res.bytes.length >= MIN_COVER_BYTES) {
-      const burned = await burnCover(cfg, res.bytes, res.contentType);
-      writeCover(db, seriesId, volumeNo, 'ndl', url, isbn, burned, res.contentType);
-      return 'ndl';
-    }
-  }
-
-  if (!rakutenReady(cfg)) return null;
-
-  // 楽天の 1 冊を書影として焼く。焼けたら true
-  const burnFrom = async (rec: RakutenRecord | null, provider: string): Promise<boolean> => {
-    const imageUrl = rakutenImageUrl(rec?.imageUrl, cfg.bib.rakuten.imageSize);
-    if (!imageUrl) return false;
-    const res = await fetchBinary(cfg, 'rakuten-image', imageUrl, { referer: 'https://books.rakuten.co.jp/' });
-    if (res.status !== 200 || res.bytes.length < MIN_COVER_BYTES) return false;
-    const burned = await burnCover(cfg, res.bytes, res.contentType);
-    writeCover(db, seriesId, volumeNo, provider, imageUrl, rec?.isbn ?? isbn, burned, res.contentType);
-    return true;
-  };
-
-  if (await burnFrom(await findRakutenByIsbn(db, cfg, isbn), 'rakuten')) return 'rakuten';
-
-  /**
-   * ISBN で当たらない。**古い巻は楽天の在庫から消えている** ので、書名で拾い直す。
-   * 刷り直した版が載っていればそちらの書影が付く — 手元の本と絵が違いうるので、
-   * provider を分けて後から見分けられるようにしておく。
-   */
-  if (volumeNo === null) return null;
-  const s = db.getSeries(seriesId);
-  if (!s) return null;
-  const alt = await findRakutenByTitle(db, cfg, { title: s.title, author: s.author, volume: volumeNo });
-  if (await burnFrom(alt, 'rakuten-title')) return 'rakuten-title';
-
-  return null;
-}
-
-/**
- * 作品の代表表紙を「持っている中で一番若い巻」に貼り直す。
- *
- * 画像は焼き直さない — covers の行だけ増やして同じ file を指す。
- * 後から若い巻の表紙が埋まった時にここを呼ばないと、棚には**ずっと 6 巻の表紙**が
- * 並んだままになる。
- */
-function refreshSeriesCover(db: Db, seriesId: number): void {
-  const first = db.raw
-    .prepare('SELECT * FROM covers WHERE series_id = ? AND volume_no IS NOT NULL ORDER BY volume_no LIMIT 1')
-    .get(seriesId) as Record<string, unknown> | undefined;
-  if (!first) return;
-  db.raw
-    .prepare(
-      `INSERT INTO covers (series_id, volume_no, provider, source_url, isbn, file, bytes, content_type, created_at)
-       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(series_id, volume_no) DO UPDATE SET
-         provider = excluded.provider, source_url = excluded.source_url,
-         isbn = excluded.isbn, file = excluded.file, bytes = excluded.bytes,
-         content_type = excluded.content_type`
-    )
-    .run(
-      seriesId, String(first.provider), first.source_url as string | null, first.isbn as string | null,
-      String(first.file), Number(first.bytes), first.content_type as string | null, new Date().toISOString()
-    );
 }
 
 function writeBib(db: Db, seriesId: number, volumeNo: number | null, r: NdlRecord): void {
@@ -210,9 +81,26 @@ export async function enrichSeries(db: Db, cfg: Config, seriesId: number, opts: 
   const label = s ? `${s.author ? `[${s.author}] ` : ''}${s.title}` : `#${seriesId}`;
   const out: EnrichResult = {
     seriesId, label, recordCount: 0, publishedMax: null, bibWritten: 0, coversWritten: 0,
-    coverMissed: [], cached: false, stale: false, error: null,
+    coverMissed: [], cached: false, stale: false, picked: null, error: null,
   };
   if (!s) return { ...out, error: '作品がありません' };
+
+  /**
+   * **人がシリーズを選んでいたら、書名から当て直さない。**
+   *
+   * 血界戦線のように同じ書名で別のシリーズが並走している作品では、
+   * ここで自動の道へ入った瞬間に取り違えが戻る (bib/candidates.ts の頭)。
+   * 完結の `completed_user` と同じで、一度下した人の判断を機械が黙って覆さない。
+   */
+  const pick = db.getSeriesPick(seriesId);
+  if (pick) {
+    const r = await applyPick(db, cfg, seriesId, { pick, coverBudget: opts.coverBudget, refresh: opts.refresh });
+    return {
+      ...out,
+      recordCount: r.recordCount, publishedMax: r.publishedMax, bibWritten: r.bibWritten,
+      coversWritten: r.coversWritten, coverMissed: r.coverMissed, picked: r.title, error: r.error,
+    };
+  }
 
   // 外へ聞きに行った印は**先に**押す。表紙の取れない作品を巡回が何度も選び直して
   // 後ろの作品まで進まなくなるのを防ぐ (db.ts の enriched_at)
@@ -272,9 +160,11 @@ export async function enrichSeries(db: Db, cfg: Config, seriesId: number, opts: 
 
     if (spent >= budget) continue;
     const already = db.raw
-      .prepare('SELECT 1 FROM covers WHERE series_id = ? AND volume_no = ?')
-      .get(seriesId, vol);
-    if (already && !opts.refresh) continue;
+      .prepare('SELECT pinned FROM covers WHERE series_id = ? AND volume_no = ?')
+      .get(seriesId, vol) as { pinned: number } | undefined;
+    // 人が選んだ 1 枚は取り直しでも触らない。refresh は「外に聞き直す」であって
+    // 「人の指定を捨てる」ではない
+    if (already && (!opts.refresh || Number(already.pinned) === 1)) continue;
 
     spent++;
     try {

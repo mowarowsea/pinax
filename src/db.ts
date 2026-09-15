@@ -91,6 +91,9 @@ CREATE TABLE IF NOT EXISTS covers (
   file TEXT NOT NULL,
   bytes INTEGER NOT NULL DEFAULT 0,
   content_type TEXT,
+  -- 人が画面で選んだ表紙。**立っている行を自動の巡回は上書きしない。**
+  -- series.completed_user と同じ立場 (機械の当てずっぽうより人の判断が上)
+  pinned INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   UNIQUE(series_id, volume_no)
 );
@@ -110,6 +113,30 @@ CREATE TABLE IF NOT EXISTS bib (
   raw TEXT NOT NULL DEFAULT '{}',
   fetched_at TEXT NOT NULL,
   UNIQUE(series_id, volume_no, provider)
+);
+
+-- 人が「この作品の書誌はこのシリーズだ」と選んだ印。作品 1 つに 1 行。
+--
+-- **要るのは、同じ作者・同じ書名で別のシリーズが並走しているから。**
+-- 血界戦線 / 血界戦線Back 2 Back / 血界戦線Beat 3 Peat は NDL を書名で引くと
+-- 1 つの答えに混ざって返り、機械には手元のどれが正しいか分からない (bib/candidates.ts)。
+--
+-- series.completed_user と同じで、**スキャンも自動の巡回もこの表を書き換えない。**
+-- 人が選び直すか、指定を外すまで残る。
+CREATE TABLE IF NOT EXISTS series_pick (
+  series_id INTEGER PRIMARY KEY REFERENCES series(id) ON DELETE CASCADE,
+  -- 聞きに行く先。'all' | 'ndl' | 'rakuten'。
+  -- **提供元ではなく「検索の範囲」。** 束は提供元をまたぐ (bib/candidates.ts) ので、
+  -- ここに 1 つの提供元を書くと、選んだ時に見えていた候補と取り直しの候補がずれる
+  scope TEXT NOT NULL,
+  -- bib/candidates.ts の束の鍵 (seriesKeyOf された書名)。次に取り直す時もこれで束を選ぶ
+  group_key TEXT NOT NULL,
+  -- 見出しに出す書名と、外へ投げ直す問い合わせ。**選んだ時の問い合わせをそのまま残す** —
+  -- 作品名から組み立て直すと、人が打ち直した検索語で当てた束を二度と引けない
+  title TEXT NOT NULL,
+  query_title TEXT NOT NULL,
+  query_author TEXT,
+  picked_at TEXT NOT NULL
 );
 
 -- 外部 API の汎用キャッシュ。pinax から外へ出る問い合わせは全部ここを通る。
@@ -185,6 +212,21 @@ export interface SeriesRow {
   enrichedAt: string | null;
 }
 
+/** 人が選んだ書誌シリーズ (series_pick 表の 1 行) */
+export interface SeriesPick {
+  seriesId: number;
+  /** 聞きに行く先。'all' | 'ndl' | 'rakuten'。**提供元ではなく検索の範囲** */
+  scope: string;
+  /** bib/candidates.ts の束の鍵 */
+  groupKey: string;
+  /** 見出しに出す書名 */
+  title: string;
+  /** 選んだ時に外へ投げた問い合わせ。取り直す時もこれを使う */
+  queryTitle: string;
+  queryAuthor: string | null;
+  pickedAt: string;
+}
+
 export interface VolumeRow {
   id: number;
   seriesId: number;
@@ -244,6 +286,10 @@ export class Db {
     // 人が画面で決めた完結。フォルダ由来の completed とは別列 (SCHEMA 側の註を参照)
     if (!cols('series').has('completed_user')) {
       this.raw.exec('ALTER TABLE series ADD COLUMN completed_user INTEGER');
+    }
+    // 人が画面で選んだ表紙。自動の巡回が上書きしないための印 (SCHEMA 側の註を参照)
+    if (!cols('covers').has('pinned')) {
+      this.raw.exec('ALTER TABLE covers ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
     }
     // 列を足した後に張る。SCHEMA 側に置くと、既にある DB では列より先に走って失敗する
     this.raw.exec('CREATE INDEX IF NOT EXISTS series_enriched_idx ON series(enriched_at)');
@@ -316,6 +362,48 @@ export class Db {
       .prepare('UPDATE series SET completed_user = ?, updated_at = ? WHERE id = ?')
       .run(value === null ? null : value ? 1 : 0, now(), seriesId);
     return this.getSeries(seriesId);
+  }
+
+  // ---- 人が選んだ書誌シリーズ ---------------------------------------------
+
+  /** 作品 1 つの選択を読む。無ければ null (= 自動に任せる) */
+  getSeriesPick(seriesId: number): SeriesPick | null {
+    const r = this.raw
+      .prepare('SELECT * FROM series_pick WHERE series_id = ?')
+      .get(seriesId) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return {
+      seriesId: Number(r.series_id),
+      scope: String(r.scope),
+      groupKey: String(r.group_key),
+      title: String(r.title),
+      queryTitle: String(r.query_title),
+      queryAuthor: (r.query_author as string | null) ?? null,
+      pickedAt: String(r.picked_at),
+    };
+  }
+
+  /** 選び直しは上書き。**履歴は残さない** — 今どれを正としているかだけが要る */
+  setSeriesPick(input: Omit<SeriesPick, 'pickedAt'>): SeriesPick {
+    this.raw
+      .prepare(
+        `INSERT INTO series_pick (series_id, scope, group_key, title, query_title, query_author, picked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(series_id) DO UPDATE SET
+           scope = excluded.scope, group_key = excluded.group_key, title = excluded.title,
+           query_title = excluded.query_title, query_author = excluded.query_author,
+           picked_at = excluded.picked_at`
+      )
+      .run(
+        input.seriesId, input.scope, input.groupKey, input.title,
+        input.queryTitle, input.queryAuthor, now()
+      );
+    return this.getSeriesPick(input.seriesId)!;
+  }
+
+  /** 指定を外して自動へ戻す。**表紙そのものは消さない** (次の取り直しで貼り替わる) */
+  clearSeriesPick(seriesId: number): void {
+    this.raw.prepare('DELETE FROM series_pick WHERE series_id = ?').run(seriesId);
   }
 
   findSeriesByFolder(rootId: string, folder: string): SeriesRow | null {

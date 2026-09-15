@@ -7,6 +7,9 @@ import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { checkOwned, getSeriesDetail, listSeries, type OwnQuery } from './catalog.js';
 import { enrichSeries, fillMissingCovers, fillVolumeCovers } from './bib/enrich.js';
+import { applyPick, searchCandidates, setVolumeCover } from './bib/pick.js';
+import { cacheThumbnail, imageHostAllowed } from './bib/covers.js';
+import type { CandidateProvider } from './bib/candidates.js';
 import { searchNdl } from './bib/ndl.js';
 import { cachedFetch } from './bib/cache.js';
 import { scanAll, scanRoot } from './scan/scanner.js';
@@ -263,6 +266,143 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
    */
   app.post<{ Body: { limit?: number } }>('/api/covers/fill-volumes', async (req) => {
     return fillVolumeCovers(db, cfg, { limit: req.body?.limit ?? 20 });
+  });
+
+  // ---- 表紙を人が選ぶ -----------------------------------------------------
+
+  /**
+   * 書影の候補を外に聞いて、**シリーズの束**にまとめて返す。
+   *
+   * 検索語は既定で蔵書の作品名と著者だが、人が打ち直せる。
+   * 血界戦線のように並走するシリーズがある作品では、どの束が手元の棚なのかは
+   * 機械には分からない (bib/candidates.ts の頭) ので、ここは**見せるだけ**にして
+   * 決めるのは /cover-pick に渡す。
+   */
+  app.get<{
+    Params: { id: string };
+    Querystring: { q?: string; author?: string; provider?: string; refresh?: string };
+  }>('/api/series/:id/cover-search', async (req) => {
+    const id = Number(req.params.id);
+    const series = db.getSeries(id);
+    if (!series) throw new HttpError(404, 'その作品はありません');
+
+    const p = req.query.provider;
+    const provider: CandidateProvider | 'all' = p === 'ndl' || p === 'rakuten' ? p : 'all';
+    const found = await searchCandidates(db, cfg, {
+      title: req.query.q?.trim() || series.title,
+      // **空文字を「著者なし」として通す。** 著者を消して引き直したい時があるので、
+      // 未指定 (undefined) と区別する
+      author: req.query.author === undefined ? series.author : req.query.author.trim() || null,
+      provider,
+      refresh: req.query.refresh === '1',
+    });
+    return { ...found, pick: db.getSeriesPick(id) };
+  });
+
+  /**
+   * 「これ！」を記録して、書誌と表紙をその束で貼り直す。
+   *
+   * 記録は `series_pick` に残り、**次からの自動の取り直しもこの束だけを見る**
+   * (bib/enrich.ts の頭)。人が下した判断を機械が黙って覆さない、という点で
+   * 完結の指定 (`completed_user`) と同じ扱い。
+   */
+  app.post<{
+    Params: { id: string };
+    Body: { scope?: string; groupKey?: string; title?: string; queryTitle?: string; queryAuthor?: string | null };
+  }>('/api/series/:id/cover-pick', async (req) => {
+    const id = Number(req.params.id);
+    const series = db.getSeries(id);
+    if (!series) throw new HttpError(404, 'その作品はありません');
+
+    const scope = req.body?.scope ?? 'all';
+    if (scope !== 'all' && scope !== 'ndl' && scope !== 'rakuten') {
+      throw new HttpError(400, 'scope は all / ndl / rakuten のどれかです');
+    }
+    const groupKey = String(req.body?.groupKey ?? '').trim();
+    if (!groupKey) throw new HttpError(400, 'groupKey が要ります');
+
+    const pick = db.setSeriesPick({
+      seriesId: id,
+      scope,
+      groupKey,
+      title: String(req.body?.title ?? '').trim() || series.title,
+      // 選んだ時の検索語をそのまま残す。作品名から組み立て直すと、
+      // 人が打ち直した検索語で当てた束を次から引けなくなる
+      queryTitle: String(req.body?.queryTitle ?? '').trim() || series.title,
+      queryAuthor: req.body?.queryAuthor === undefined ? series.author : (req.body.queryAuthor || null),
+    });
+
+    const result = await applyPick(db, cfg, id, { pick });
+    // 貼り直せなかったら指定も残さない。**「選んだのに何も起きない」状態を作らない**
+    if (result.error) {
+      db.clearSeriesPick(id);
+      throw new HttpError(502, result.error);
+    }
+    return { ok: true, pick, result };
+  });
+
+  /** 指定を外して自動へ戻す。**表紙は消さない** — 次の取り直しで貼り替わる */
+  app.delete<{ Params: { id: string } }>('/api/series/:id/cover-pick', async (req) => {
+    const id = Number(req.params.id);
+    if (!db.getSeries(id)) throw new HttpError(404, 'その作品はありません');
+    db.clearSeriesPick(id);
+    return { ok: true };
+  });
+
+  /**
+   * 1 巻 (または作品の代表表紙) の絵だけを人の指定で差し替える。
+   * 焼いた行に印が立ち、**自動の巡回では二度と上書きされない**。
+   */
+  app.post<{
+    Params: { id: string };
+    Body: { volume?: number | null; provider?: string; imageUrl?: string; isbn?: string | null };
+  }>('/api/series/:id/cover', async (req) => {
+    const id = Number(req.params.id);
+    if (!db.getSeries(id)) throw new HttpError(404, 'その作品はありません');
+    const imageUrl = String(req.body?.imageUrl ?? '').trim();
+    if (!imageUrl) throw new HttpError(400, 'imageUrl が要ります');
+    const v = req.body?.volume;
+    const volume = v === null || v === undefined ? null : Number(v);
+    if (volume !== null && !Number.isInteger(volume)) throw new HttpError(400, 'volume は整数か null です');
+
+    try {
+      await setVolumeCover(db, cfg, {
+        seriesId: id,
+        volume,
+        provider: String(req.body?.provider ?? 'manual'),
+        imageUrl,
+        isbn: req.body?.isbn ?? null,
+      });
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
+    return { ok: true, volume };
+  });
+
+  /**
+   * 候補の**下見**の画像を中継する。
+   *
+   * ブラウザから直接は引けない — NDL のサムネイルは Referer を見て弾くが、
+   * Referer はブラウザが決めるヘッダなので画面側からは名乗れない (bib/covers.ts)。
+   * 行き先は許した書影の置き場だけ。任意の URL を取りに行く踏み台にはしない。
+   */
+  app.get<{ Querystring: { u?: string } }>('/api/bib/thumb', async (req, reply) => {
+    const url = req.query.u;
+    if (!url) throw new HttpError(400, 'u が要ります');
+    // **弾いた理由を「書影がありません」に混ぜない。** 行き先を許していないのと
+    // 相手が画像を持っていないのとでは、直しに行く先が違う
+    if (!imageHostAllowed(url)) throw new HttpError(400, `この行き先からは取りません: ${url}`);
+    let got;
+    try {
+      got = await cacheThumbnail(cfg, url);
+    } catch (e) {
+      throw new HttpError(502, (e as Error).message);
+    }
+    if (!got) throw new HttpError(404, '書影がありません');
+    // 名前が URL のハッシュなので中身は変わりうる。1 日だけ持たせる
+    reply.header('Cache-Control', 'public, max-age=86400');
+    reply.type(got.contentType);
+    return fs.createReadStream(got.abs);
   });
 
   app.get<{ Params: { id: string } }>('/api/covers/:id', async (req, reply) => {
