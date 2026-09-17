@@ -252,6 +252,23 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .mini:hover { border-color: var(--brand); color: var(--brand); }
 .more { font-size: 11.5px; color: var(--ink-3); }
 
+/* ---- 名前を直す ---- */
+.rnbox { margin: 12px 0 0; padding: 12px; border: 1px solid var(--line); border-left: 3px solid var(--brand);
+  border-radius: var(--radius); background: var(--panel); display: grid; gap: 10px; }
+.rnbox label.fld { display: grid; gap: 4px; font-size: 11.5px; color: var(--ink-3); flex: 1 1 200px; }
+.rnbox input[type=text] { border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  border-radius: 8px; padding: 8px 12px; font-size: 14px; width: 100%; }
+.rnbox input[type=text]:focus { outline: 2px solid var(--brand-soft); border-color: var(--brand); }
+.rnrow { display: flex; gap: 10px; flex-wrap: wrap; }
+.rnplan { font-size: 12.5px; border-radius: 8px; padding: 9px 12px; background: var(--brand-soft); color: var(--ink-2); }
+.rnplan .rnto { font-weight: 700; color: var(--brand); word-break: break-all; }
+.rnplan .rnfrom { color: var(--ink-3); text-decoration: line-through; word-break: break-all; }
+.rnplan small { display: block; color: var(--ink-3); font-size: 11.5px; margin-top: 4px; }
+.rnwarn { color: var(--gap); font-weight: 600; margin-top: 5px; }
+.rnacts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.rnacts .go { border-color: var(--brand); color: var(--brand); font-weight: 700; }
+.rnnote { font-size: 11.5px; color: var(--ink-3); }
+
 /* ---- 表紙を選ぶ ----
    詳細の板の中で中身だけ差し替える。もう 1 枚重ねると、Android の戻るで
    どちらが閉じるのか分からなくなる (詳細の板は履歴を 1 つ積んで開いている) */
@@ -617,8 +634,10 @@ function detailHtml(d) {
       <div class="d-actions">
         <button class="btn" id="enrich" data-id="${d.id}">書誌と表紙を取り直す</button>
         <button class="btn" id="pick-open">表紙を探して選ぶ</button>
+        <button class="btn" id="rn-open">名前を直す</button>
         ${caps.reveal.available ? '<button class="btn pc-only" id="reveal">エクスプローラで開く</button>' : ''}
       </div>
+      ${renameBoxHtml(d)}
     </div>
   </div>
   <h3 class="sec">巻 <span style="font-weight:400">— 表紙を押すとその巻だけ選び直せます</span></h3>
@@ -677,6 +696,73 @@ function completedSwitchHtml(d) {
       <span>完結済み</span>
     </label>
     ${note ? `<span class="setnote">${note}</span>` : ''}
+  </div>`;
+}
+
+/**
+ * 作品フォルダの名前を直す欄。
+ *
+ * **押した時だけ開く。** 普段の作業ではまず触らないので、畳んでおかないと
+ * 「完結」「表紙を選ぶ」のような毎日使うものが押しにくくなる。
+ *
+ * 状態を detailHtml の外に置いているのは、詳細の中身を貼り直しても
+ * 打ちかけの名前が消えないようにするため (表紙を選ぶ画面と同じ作り)。
+ */
+const renamer = { seriesId: null, open: false, title: '', author: '', completed: false, plan: null };
+
+function renameOpen(d) {
+  renamer.seriesId = d.id;
+  renamer.open = true;
+  renamer.title = d.title;
+  renamer.author = d.author ?? '';
+  renamer.completed = d.completed;
+  renamer.plan = null;
+}
+
+function renameClose() {
+  renamer.open = false;
+  renamer.plan = null;
+}
+
+/** 欄の中身を読み取って控える。貼り直しで打ちかけを失わないため */
+function renameCollect() {
+  const t = $('rn-title'); const a = $('rn-author'); const c = $('rn-completed');
+  if (t) renamer.title = t.value;
+  if (a) renamer.author = a.value;
+  if (c) renamer.completed = c.checked;
+}
+
+function renameBoxHtml(d) {
+  if (!renamer.open || renamer.seriesId !== d.id) return '';
+  const p = renamer.plan;
+  // 計画が出ていて、名前が実際に変わる時だけ「付け替える」を出す。
+  // **見る前に押せる形にしない** — どう変わるか見ずに棚を動かせてしまう
+  const canGo = p && !p.noop;
+  return `<div class="rnbox">
+    <div class="rnrow">
+      <label class="fld">作品名
+        <input type="text" id="rn-title" value="${esc(renamer.title)}" placeholder="正しい作品名"></label>
+      <label class="fld">著者
+        <input type="text" id="rn-author" value="${esc(renamer.author)}" placeholder="著者 (空でも可)"></label>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="rn-completed"${renamer.completed ? ' checked' : ''}>
+      <span class="track"></span>
+      <span>完結済み — フォルダ名に (完) を書く</span>
+    </label>
+    ${p ? `<div class="rnplan">
+      <div class="rnfrom">${esc(p.from)}</div>
+      <div class="rnto">${p.noop ? '名前は変わりません' : '→ ' + esc(p.to)}</div>
+      ${p.warnings.map((w) => `<div class="rnwarn">${esc(w)}</div>`).join('')}
+      ${p.noop ? '' : `<small>ファイル ${p.files} 点の置き場所が変わります。ファイル名そのものは変えません</small>`}
+    </div>` : ''}
+    <div class="rnacts">
+      <button class="btn" id="rn-plan">${p ? 'もう一度見る' : 'どう変わるか見る'}</button>
+      ${canGo ? '<button class="btn go" id="rn-go">この名前に付け替える</button>' : ''}
+      <button class="mini" id="rn-cancel">やめる</button>
+    </div>
+    <small class="rnnote">ここから直すと焼いた表紙も選んだシリーズも完結の指定も残ります。
+      エクスプローラで直すと別の作品として登録し直されて、全部消えます</small>
   </div>`;
 }
 
@@ -790,6 +876,57 @@ function wireDetail(d) {
       await openDetail(id, 'keep');
     } catch (e) {
       toast('失敗: ' + e.message, 5000);
+    }
+  });
+
+  // 名前を直す。**見る → 押す**の二段。計画を見ずに棚を動かせる形にはしない
+  $('rn-open')?.addEventListener('click', async () => {
+    if (renamer.open && renamer.seriesId === id) renameClose();
+    else renameOpen(d);
+    await openDetail(id, 'keep');
+  });
+  $('rn-cancel')?.addEventListener('click', async () => {
+    renameClose();
+    await openDetail(id, 'keep');
+  });
+  $('rn-plan')?.addEventListener('click', async () => {
+    renameCollect();
+    try {
+      const r = await api(`/api/series/${id}/rename`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: renamer.title, author: renamer.author, completed: renamer.completed }),
+      });
+      renamer.plan = r.plan;
+    } catch (err) {
+      renamer.plan = null;
+      toast('できません: ' + err.message, 6000);
+    }
+    await openDetail(id, 'keep');
+  });
+  $('rn-go')?.addEventListener('click', async (e) => {
+    renameCollect();
+    const p = renamer.plan;
+    // 注意書きが立っている計画はもう一度聞く。巻数を読めなくなるファイルが出る
+    if (p?.warnings.length && !confirm(p.warnings.join('\n\n') + '\n\nそれでも付け替えますか?')) return;
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span> 付け替え中';
+    try {
+      const r = await api(`/api/series/${id}/rename`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: renamer.title, author: renamer.author, completed: renamer.completed,
+          apply: true, confirm: true,
+        }),
+      });
+      toast(`「${r.result.to}」に付け替えました`, 5000);
+      renameClose();
+      await openDetail(id, 'keep');
+      await loadGrid();
+    } catch (err) {
+      toast('失敗: ' + err.message, 6000);
+      btn.disabled = false;
+      btn.textContent = 'この名前に付け替える';
     }
   });
 

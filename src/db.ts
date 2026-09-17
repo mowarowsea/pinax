@@ -352,6 +352,55 @@ export class Db {
   }
 
   /**
+   * 作品フォルダの名前を付け替える。**`series.id` を保ったまま**書き換えるのが肝。
+   *
+   * エクスプローラで名前を変えると、一意キーが `(root_id, folder)` なので
+   * 次のスキャンは**別の作品として新しい行を作る**。焼いた表紙も、選んだ系列
+   * (`series_pick`) も、完結の指定も古い行に取り残され、棚からは消えたように見える。
+   * ここを通せば全部ぶら下がったまま残る。
+   *
+   * `completed` (フォルダ由来の列) もここで書く。`upsertSeries` は
+   * 「一度立った完結は倒さない」ので、**印を外す向きの付け替えはスキャン任せにできない**。
+   * 併せて `completed_user` を外す — フォルダに書き出した以上、逃げ道はもう要らない。
+   *
+   * `files.rel_path` も一緒に付け替える。**ここを落とすと次のスキャンで
+   * 全ファイルが「消えた」に倒れ、同じ数だけ「増えた」が立つ。**
+   * 区切りは Windows の `\` と POSIX の `/` の両方を見る (DB は歩いた OS の形で持つ)。
+   */
+  renameSeriesFolder(input: {
+    seriesId: number; folder: string; title: string; author: string | null;
+    seriesKey: string; completed: boolean;
+  }): SeriesRow {
+    const t = now();
+    const before = this.getSeries(input.seriesId);
+    if (!before) throw new Error('その作品はありません');
+
+    this.raw
+      .prepare(
+        `UPDATE series SET folder = ?, title = ?, author = ?, series_key = ?,
+                           completed = ?, completed_user = NULL, updated_at = ?
+          WHERE id = ?`
+      )
+      .run(input.folder, input.title, input.author, input.seriesKey,
+        input.completed ? 1 : 0, t, input.seriesId);
+
+    const rows = this.raw
+      .prepare('SELECT id, rel_path FROM files WHERE series_id = ?')
+      .all(input.seriesId) as { id: number; rel_path: string }[];
+    const upd = this.raw.prepare('UPDATE files SET rel_path = ? WHERE id = ?');
+    for (const r of rows) {
+      const rel = String(r.rel_path);
+      const sep = rel.includes('\\') ? '\\' : '/';
+      const head = before.folder + sep;
+      // 作品フォルダの直下に無いファイル (根に平置き) は触らない
+      if (!rel.startsWith(head)) continue;
+      upd.run(input.folder + sep + rel.slice(head.length), Number(r.id));
+    }
+
+    return this.getSeries(input.seriesId)!;
+  }
+
+  /**
    * 完結を人の手で決める。`null` で指定を外し、フォルダの `(完)` に従う状態へ戻す。
    *
    * **フォルダ側 (`completed`) は書き換えない。** 書き換えると次のスキャンが

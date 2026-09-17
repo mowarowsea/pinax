@@ -311,6 +311,29 @@ export function seriesLabel(author: string | null | undefined, title: string): s
   return a ? `[${a}] ${title}` : title;
 }
 
+/**
+ * 作品フォルダ名を組み立てる。`[著者] 作品名(完)`
+ *
+ * **完結マークは名前を詰めた後に足す。** 先に足してから詰めると `(完` のような
+ * 欠けた印が残り、`stripCompletionMark` が読み戻せずに完結を見落とす。
+ * 削るのは作品名の側で、印は必ず丸ごと残す。
+ *
+ * 渡された作品名に既に `(完)` が入っていても落とす。**完結を言うのは引数ひとつ**で、
+ * 名前の中の印と二重になると `…(完)(完)` が出来る。
+ */
+export function planFolderName(
+  author: string | null | undefined,
+  title: string,
+  completed: boolean
+): string | null {
+  const mark = completed ? '(完)' : '';
+  const bareTitle = stripCompletionMark(String(title ?? '')).text.trim();
+  const bareAuthor = stripCompletionMark(String(author ?? '')).text.trim() || null;
+  if (!bareTitle) return null;
+  const safe = sanitizeSegment(seriesLabel(bareAuthor, bareTitle), SEGMENT_MAX - mark.length);
+  return safe ? `${safe}${mark}` : null;
+}
+
 // ---- 組み立て (PowerDowner から引き取り) -----------------------------------
 
 export interface NameInput {

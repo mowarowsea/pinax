@@ -14,6 +14,8 @@ import { searchNdl } from './bib/ndl.js';
 import { cachedFetch } from './bib/cache.js';
 import { scanAll, scanRoot } from './scan/scanner.js';
 import { openInExplorer, resolveInsideRoot, revealAbility } from './reveal.js';
+import { applyRename, planRename, RenameError } from './rename.js';
+import { shelfBusy } from './lock.js';
 
 export class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -142,6 +144,51 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   );
 
   /**
+   * 作品フォルダの名前を付け替える。**pinax がファイルを書く数少ない場所** (rename.ts)。
+   *
+   * `apply` を付けない限り**計画を返すだけ**でファイルには触らない。画面は
+   * 計画を見せて確かめてから `apply: true` で押し直す。注意書き (warnings) が
+   * 立っている計画は `confirm: true` が無いと通らない — 巻数を読めなくなる
+   * ファイルが出る付け替えを、黙って実行させないため。
+   */
+  app.post<{
+    Params: { id: string };
+    Body: { title?: string; author?: string | null; completed?: boolean; apply?: boolean; confirm?: boolean };
+  }>('/api/series/:id/rename', async (req) => {
+    const id = Number(req.params.id);
+    const series = db.getSeries(id);
+    if (!series) throw new HttpError(404, 'その作品はありません');
+    const root = rootById(series.rootId);
+    if (root.kind === 'inbox') throw new HttpError(400, '受け入れトレイの中は npm run inbox の仕事です');
+
+    const body = req.body ?? {};
+    if (typeof body.completed !== 'boolean') throw new HttpError(400, 'completed は true / false です');
+
+    let plan;
+    try {
+      plan = planRename(db, root, id, {
+        title: String(body.title ?? ''),
+        author: body.author ?? null,
+        completed: body.completed,
+      });
+    } catch (e) {
+      throw e instanceof RenameError ? new HttpError(400, e.message) : e;
+    }
+
+    if (body.apply !== true) return { plan, applied: false };
+    if (plan.warnings.length && body.confirm !== true) {
+      throw new HttpError(409, plan.warnings.join(' / '));
+    }
+
+    try {
+      const result = await applyRename(db, root, plan, cfg.dataDir);
+      return { plan, applied: true, result, series: db.getSeries(id) };
+    } catch (e) {
+      throw e instanceof RenameError ? new HttpError(409, e.message) : e;
+    }
+  });
+
+  /**
    * 作品のフォルダをエクスプローラで開く。開くのは **pinax が動いている PC** の側。
    * 見ている端末が PC かどうかは画面がメディアクエリで決める (reveal.ts の頭)。
    * `fileId` を添えるとそのファイルを選択した状態で開くので、
@@ -215,6 +262,17 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
 
   app.post<{ Body: { items?: OwnQuery[] } & OwnQuery }>('/api/own', async (req) => {
     requireToken(req as unknown as { headers: Record<string, unknown> });
+    /**
+     * **ファイルを動かしている最中は答えない。** フォルダの付け替えの途中は
+     * ファイルが「消えた」に倒れて見える瞬間があり、そこで答えると
+     * 持っている巻に「持っていない」と言ってしまう — その巻が落とし直される。
+     * 503 なら向こうが後で聞き直せる (PowerDowner のリトライに乗る)。
+     *
+     * **スキャン中は答える。** スキャンは 1 トランザクションで書くので途中が見えない
+     * (lock.ts)。3 時間ごとに 50 秒ずつ他のサービスを止める方が高くつく。
+     */
+    const busy = shelfBusy();
+    if (busy) throw new HttpError(503, `棚を触っています (${busy})。後でもう一度聞いてください`);
     const body = req.body ?? {};
     const queries = Array.isArray(body.items) ? body.items : [body];
     if (!queries.length) throw new HttpError(400, 'items が空です');

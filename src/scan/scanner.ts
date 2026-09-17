@@ -4,6 +4,7 @@ import type { Db } from '../db.js';
 import type { LibraryRoot } from '../config.js';
 import { CONTENT_EXT, SPLIT_EXT, parseLibraryEntry, seriesLabel } from '../naming.js';
 import { seriesKeyOf } from '../volume.js';
+import { withShelfLock } from '../lock.js';
 
 /**
  * 蔵書フォルダを歩いてカタログに起こす。
@@ -71,7 +72,18 @@ export async function listFiles(root: string): Promise<FoundFile[]> {
   return out;
 }
 
-export async function scanRoot(db: Db, root: LibraryRoot): Promise<ScanResult> {
+/**
+ * 1 つの根を歩く。**棚を掴んでから歩く** (lock.ts) — リネームと同時に走ると、
+ * 付け替えの途中のフォルダを読んで「消えた + 増えた」に見えてしまう。
+ *
+ * 掴むのは根ごと。scanAll で丸ごと掴むと、根の数だけ 50 秒が積み上がって
+ * その間ずっと所持の問い合わせが止まる。
+ */
+export function scanRoot(db: Db, root: LibraryRoot): Promise<ScanResult> {
+  return withShelfLock(`${root.label} を読んでいます`, () => scanRootLocked(db, root));
+}
+
+async function scanRootLocked(db: Db, root: LibraryRoot): Promise<ScanResult> {
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
   const scanId = db.startScan(root.id, startedAt);
