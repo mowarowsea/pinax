@@ -288,10 +288,13 @@ export async function fillVolumeCovers(
         WHERE s.present = 1
           AND b.isbn IS NOT NULL AND b.isbn <> ''
           AND b.volume_no IS NOT NULL
-          -- 手元から消えた巻の表紙は要らない
+          -- 手元から消えた巻の表紙は要らない。
+          -- **合本 (第01-06巻) が覆う巻も「手元にある」。** 単巻 (from = to) に限ると、
+          -- 合本でしか持っていない巻の表紙が永久に埋まらない。手元ではそれが 799 冊で、
+          -- うち 496 冊は ISBN 付きの書誌を既に持っていた (2026-09-18)
           AND EXISTS (SELECT 1 FROM volumes v
                        WHERE v.series_id = b.series_id AND v.present = 1
-                         AND v.volume_from = b.volume_no AND v.volume_to = b.volume_no)
+                         AND b.volume_no BETWEEN v.volume_from AND v.volume_to)
           AND NOT EXISTS (SELECT 1 FROM covers c
                            WHERE c.series_id = b.series_id AND c.volume_no IS b.volume_no)
           AND (b.cover_tried_at IS NULL OR b.cover_tried_at < ?)

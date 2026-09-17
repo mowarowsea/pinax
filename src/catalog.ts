@@ -374,8 +374,27 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
     covers.filter((c) => c.volume_no !== null).map((c) => [Number(c.volume_no), c])
   );
 
+  /**
+   * その巻の板に出す表紙。
+   *
+   * **合本 (第01-06巻) には、覆う巻のうちいちばん若い巻の絵を出す。** 板は 1 枚しか
+   * 置けないので、第01-06巻なら第01巻の絵が素直。単巻に限って空にしていたが、
+   * それだと合本でしか持っていない巻が棚でも中でも絵無しのまま残る (手元で 799 冊)。
+   *
+   * ただし「選」の印は合本には立てない。あれは**この巻の表紙を選び直した**印で、
+   * 選び直せるのは単巻だけ (下の single)。合本に出すと外し方の無い印になる。
+   */
+  const coverFor = (v: { volumeFrom: number; volumeTo: number }): { id: number; pinned: number } | undefined => {
+    if (v.volumeFrom === v.volumeTo) return coverByVol.get(v.volumeFrom);
+    for (let i = v.volumeFrom; i <= v.volumeTo; i++) {
+      const c = coverByVol.get(i);
+      if (c) return { id: c.id, pinned: 0 };
+    }
+    return undefined;
+  };
+
   const details: VolumeDetail[] = volumes.map((v) => {
-    const cover = v.volumeFrom === v.volumeTo ? coverByVol.get(v.volumeFrom) : undefined;
+    const cover = coverFor(v);
     const coverId = cover?.id;
     const mine = fileRows.filter((r) => Number(r.volume_id) === v.id && Number(r.present) === 1);
     return {

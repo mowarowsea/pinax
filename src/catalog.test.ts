@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { Db } from './db.js';
-import { checkOwned, holdingsOf, issuesOf, listSeries } from './catalog.js';
+import { checkOwned, getSeriesDetail, holdingsOf, issuesOf, listSeries } from './catalog.js';
 import { seriesKeyOf } from './volume.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pinax-test-'));
@@ -276,4 +276,29 @@ test('巻を 1 つも読めない作品は作品の登録日で並ぶ', () => {
   const updated = listSeries(db, { sort: 'updated', limit: 500 });
   assert.equal(updated.items[0].id, loose);
   assert.equal(updated.items[0].volumeAddedAt, '2099-01-01T00:00:00.000Z');
+});
+
+test('合本の板には、覆う巻のうち一番若い巻の表紙を出す', () => {
+  // 第01-06巻 は 1 つの板に畳まれるので、置ける絵は 1 枚。第01巻の絵が素直。
+  // 単巻 (from = to) に限っていた頃は、合本でしか持っていない巻が絵無しで残った
+  const id = seed('[武論尊×原哲夫] 北斗の拳', '北斗の拳', '武論尊×原哲夫', [[1, 6, '巻']]);
+  db.raw.prepare(
+    `INSERT INTO covers (series_id, volume_no, provider, file, bytes, pinned, created_at)
+     VALUES (?, 2, 'rakuten', 'v2.jpg', 1, 1, '2026-01-01')`
+  ).run(id);
+
+  const d = getSeriesDetail(db, id)!;
+  const bundle = d.volumes.find((v) => v.volumeFrom === 1 && v.volumeTo === 6)!;
+  assert.ok(bundle.coverUrl, '合本にも絵が付く');
+  assert.equal(bundle.coverPinned, false, '「選」の印は立てない — 合本からは選び直せない');
+
+  // 第01巻の絵が入ったら、そちらが勝つ (一番若い巻)
+  db.raw.prepare(
+    `INSERT INTO covers (series_id, volume_no, provider, file, bytes, created_at)
+     VALUES (?, 1, 'rakuten', 'v1.jpg', 1, '2026-01-01')`
+  ).run(id);
+  const first = db.raw.prepare('SELECT id FROM covers WHERE series_id = ? AND volume_no = 1').get(id) as { id: number };
+  const d2 = getSeriesDetail(db, id)!;
+  const bundle2 = d2.volumes.find((v) => v.volumeFrom === 1 && v.volumeTo === 6)!;
+  assert.equal(bundle2.coverUrl, `/api/covers/${first.id}`);
 });
