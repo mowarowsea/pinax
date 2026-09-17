@@ -1151,7 +1151,12 @@ $('grid').addEventListener('click', (e) => {
   const card = e.target.closest('.card');
   if (card) openDetail(Number(card.dataset.id));
 });
-$('sheet').addEventListener('click', (e) => { if (e.target === $('sheet')) closeSheet(); });
+// 背景を叩いて閉じる。**押し始めが背景だった時だけ** —
+// click は押した所と離した所の共通の親で起きるので、板の上の文字を選んだ指を
+// 背景で離すと target が .sheet になり、選んだだけで板が消える
+let pressedOnBackdrop = false;
+$('sheet').addEventListener('pointerdown', (e) => { pressedOnBackdrop = e.target === $('sheet'); });
+$('sheet').addEventListener('click', (e) => { if (pressedOnBackdrop && e.target === $('sheet')) closeSheet(); });
 $('sheet-close').addEventListener('click', closeSheet);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheetOpen()) closeSheet(); });
 
