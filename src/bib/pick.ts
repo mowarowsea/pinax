@@ -2,7 +2,7 @@ import type { Config } from '../config.js';
 import type { Db, SeriesPick } from '../db.js';
 import { ProviderStopError } from './cache.js';
 import {
-  byVolumeOf, googleCandidate, groupCandidates, ndlCandidate, rakutenCandidate,
+  byVolumeOf, googleCandidate, groupCandidates, imageCandidatesOf, ndlCandidate, rakutenCandidate,
   type Candidate, type CandidateGroup, type CandidateProvider,
 } from './candidates.js';
 import { fetchAndBurn, fetchCover, refreshSeriesCover, writeCover, imageHostAllowed } from './covers.js';
@@ -175,6 +175,26 @@ async function burnFromCandidate(
 }
 
 /**
+ * 束がこの巻に出せる絵を、**画面に並んでいる順に試す**。1 冊で諦めない。
+ *
+ * 書影 URL があることと、その URL が絵を返すことは別
+ * (candidates.ts の `imageCandidatesOf`)。初版で 404 を食らったところで打ち切ると、
+ * 同じ巻の新装版が候補として画面に出ていても一度も試されないまま束の外へ落ちる。
+ */
+async function burnFromGroup(
+  db: Db,
+  cfg: Config,
+  seriesId: number,
+  volumeNo: number | null,
+  cands: Candidate[]
+): Promise<boolean> {
+  for (const c of cands) {
+    if (await burnFromCandidate(db, cfg, seriesId, volumeNo, c)) return true;
+  }
+  return false;
+}
+
+/**
  * 人が選んだ束を正として、作品の書誌と表紙を貼り直す。
  *
  * **古い書誌と表紙は先に落とす。** 取り違えたシリーズの行を残したまま上書きすると、
@@ -273,8 +293,16 @@ export async function applyPick(
 
     spent++;
     try {
-      // まず**候補で見せた絵そのもの**を焼く。人が選んだ画面と棚が食い違わないように
-      if (await burnFromCandidate(db, cfg, seriesId, vol, c)) {
+      /**
+       * まず**候補で見せた絵そのもの**を焼く。人が選んだ画面と棚が食い違わないように。
+       *
+       * **この巻に出ている候補を全部試す。** 束の先頭 1 冊 (= 書誌に採った初版) だけを
+       * 試して終わると、その版に書影が無いだけで束の外の道へ落ちていく。
+       * ARMS がそれで、1997年の初版は NDL にサムネイルが無く、画面に並んでいた
+       * 2007年・2014年の新装版は一度も試されないまま、Google の 128px の
+       * 目次ページが棚に載っていた (2026-09-17)。
+       */
+      if (await burnFromGroup(db, cfg, seriesId, vol, imageCandidatesOf(group, vol))) {
         out.coversWritten++;
         continue;
       }
@@ -296,12 +324,18 @@ export async function applyPick(
   /**
    * 巻の表紙が 1 枚も焼けなかった作品 (単巻もの、全部が合本の作品) は、
    * 束の顔を代表表紙に使う。**ここが無いと棚に表紙無しで並ぶ** —
-   * 候補の画面では絵が見えていたのに、選んだら何も出ない、という見え方になる
+   * 候補の画面では絵が見えていたのに、選んだら何も出ない、という見え方になる。
+   *
+   * **頭から数枚だけ試す。** ここに来るのは (a) 巻の表紙を一度も取りに行っていない作品か、
+   * (b) 巻の絵が全部駄目だった作品。(b) で束を丸ごと舐め直すと、さっき駄目だった絵を
+   * 53 件ぶん叩き直すことになる。束が丸ごと外れている時に相手を何十回も叩かないよう頭で切る
    */
   const hasCover = db.raw.prepare('SELECT 1 FROM covers WHERE series_id = ? LIMIT 1').get(seriesId);
   if (!hasCover && head) {
     try {
-      if (await burnFromCandidate(db, cfg, seriesId, null, head)) out.coversWritten++;
+      if (await burnFromGroup(db, cfg, seriesId, null, imageCandidatesOf(group, null).slice(0, 6))) {
+        out.coversWritten++;
+      }
     } catch (e) {
       if (e instanceof ProviderStopError) return { ...out, stopped: true, error: `${e.message} (${e.detail})` };
       // 取れなくても致命的ではない。表紙の無い作品として並ぶ

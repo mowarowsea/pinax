@@ -324,6 +324,24 @@ export function pickVolume(group: CandidateGroup, volume: number): Candidate | n
 }
 
 /**
+ * 束の中で**この巻の絵を持っている候補**を、画面に並んでいるのと同じ順で返す。
+ *
+ * `pickVolume` の 1 冊とは用途が違う。あちらが選ぶのは**書誌の正**なので初版を採るが、
+ * **古い版ほど書影を持っていない。** NDL の候補は ISBN さえあれば書影 URL が付くものの、
+ * 実際にサムネイルがあるのは半分ほどで、URL の有無では持っているかどうかが分からない
+ * (2026-09-17 に ARMS で実測: 1997年の初版は全巻 404、2007年と2014年の新装版は全部あった)。
+ *
+ * だから絵は**1 冊に賭けず、束が出せる分を順に試す**。これが無いと、
+ * 「表紙を選ぶ」画面には新装版の書影が並んで見えているのに、選んだ途端に
+ * 初版の 404 だけを試して束の外へ落ちていく — 画面に一度も出なかった絵が棚に載る。
+ *
+ * `volume` に null を渡すと束の全部 (作品の代表表紙を探す時に使う)。
+ */
+export function imageCandidatesOf(group: CandidateGroup, volume: number | null): Candidate[] {
+  return group.items.filter((c) => c.imageUrl && (volume === null || c.volume === volume));
+}
+
+/**
  * 束を「巻 → 1 冊」の対応表にする。
  * 巻として読めなかったものは落ちる (数直線に乗せられないため)。
  */

@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { groupCandidates, ndlCandidate, splitCandidateTitle, type Candidate } from './candidates.js';
+import {
+  byVolumeOf, groupCandidates, imageCandidatesOf, ndlCandidate, splitCandidateTitle, type Candidate,
+} from './candidates.js';
 import type { NdlRecord } from './ndl.js';
 
 /**
@@ -48,7 +50,7 @@ test('裸の数字は前に空白がある時だけ巻と読む', () => {
 });
 
 /** NDL の item を 1 つ作る。書誌の他の欄はこの束ね方に効かない */
-function ndl(title: string, volume: number | null, date: string, isbn: string): Candidate {
+function ndl(title: string, volume: number | null, date: string, isbn: string | null): Candidate {
   return ndlCandidate({
     title,
     volumeRaw: volume === null ? null : String(volume),
@@ -146,4 +148,46 @@ test('束の著者は多数決で 1 つに決める', () => {
   ]);
   const plain = groups.find((g) => g.title === '血界戦線')!;
   assert.equal(plain.author, '内藤, 泰弘');
+});
+
+/**
+ * ARMS で実際に返ってきた形 (2026-09-17)。同じ巻に初版と新装版が 3 つ並ぶ。
+ *
+ * **初版には NDL のサムネイルが無い。** ISBN があるので書影 URL は付くが、
+ * 取りに行くと 404 で、絵を持っているのは 2007年と2014年の新装版の方だった。
+ */
+const ARMS: Candidate[] = [
+  ndl('Arms', 1, '1997.11', '4091248810'),
+  ndl('Arms', 1, '2007.6', '9784091214126'),
+  ndl('ARMS', 1, '2014.4', '9784091264831'),
+  ndl('Arms', 2, '1998.2', '4091248829'),
+  ndl('Arms', 16, '2001.4', '4091248969'),
+];
+
+test('巻の絵の候補は束にある版を全部出す', () => {
+  // **1 冊で打ち切らない。** 書誌に採るのは初版 (pickVolume) だが、
+  // 絵はその版が持っているとは限らない。打ち切ると束の外から知らない絵が焼かれる
+  const group = groupCandidates(ARMS)[0];
+  assert.deepEqual(imageCandidatesOf(group, 1).map((c) => c.date), ['1997.11', '2007.6', '2014.4']);
+  // 書誌の正はあくまで初版のまま
+  assert.equal(byVolumeOf(group).get(1)?.date, '1997.11');
+});
+
+test('巻の絵の候補は古い順。画面に並んでいるのと同じ順で試す', () => {
+  const group = groupCandidates(ARMS)[0];
+  // 画面 (pk-items) は group.items をそのまま並べる。焼く順もそれに合わせる
+  const shown = group.items.filter((c) => c.volume === 1).map((c) => c.date);
+  assert.deepEqual(imageCandidatesOf(group, 1).map((c) => c.date), shown);
+});
+
+test('書影 URL の無い候補は絵の候補に出さない', () => {
+  // ISBN の無い記録には書影 URL が付かない。取りに行く先が無いので数えない
+  const group = groupCandidates([...ARMS, ndl('Arms', 16, '2015.7', null)])[0];
+  assert.deepEqual(imageCandidatesOf(group, 16).map((c) => c.date), ['2001.4']);
+});
+
+test('巻を指定しなければ束の絵を全部出す', () => {
+  // 代表表紙を探す時の道。巻の絵が 1 枚も焼けなかった作品でここを使う
+  const group = groupCandidates(ARMS)[0];
+  assert.equal(imageCandidatesOf(group, null).length, ARMS.length);
 });
