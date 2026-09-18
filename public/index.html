@@ -1382,8 +1382,14 @@ $('scan').addEventListener('click', async () => {
   try {
     const { results } = await api('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     const r = results[0] ?? {};
-    toast(r.error ? r.error : `${r.filesSeen} ファイル / 作品 +${r.seriesAdded} / 巻 +${r.volumesAdded}`, 5000);
+    // **消えた分も言う。** 増えた数しか出さないと、棚から抜いたファイルに
+    // 気づいていないように見える (実際は present を倒している)
+    const bits = [`${r.filesSeen} ファイル`, `作品 +${r.seriesAdded}`, `巻 +${r.volumesAdded}`];
+    if (r.gone) bits.push(`消えた ${r.gone}`);
+    toast(r.error ? r.error : bits.join(' / '), 5000);
     await Promise.all([loadGrid(), loadNews(), loadStats()]);
+    // 開いたままの板は貼り直さないと古いまま。**読み直しても中身が変わらない**所だった
+    if (sheetOpen() && lastDetail) await openDetail(lastDetail.id, 'keep');
   } catch (e) { toast('失敗: ' + e.message, 5000); }
   b.disabled = false;
   b.textContent = '棚を読み直す';

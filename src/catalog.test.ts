@@ -351,3 +351,44 @@ test('合本の板には、覆う巻のうち一番若い巻の表紙を出す',
   const bundle2 = d2.volumes.find((v) => v.volumeFrom === 1 && v.volumeTo === 6)!;
   assert.equal(bundle2.coverUrl, `/api/covers/${first.id}`);
 });
+
+test('棚から抜いたファイルは詳細に残らない', () => {
+  // 合本と重複を手で整理して 第01巻.rar だけ残した後の形。markGone は行を消さずに
+  // present を倒すだけなので、詳細が present を見ていないと**整理する前の棚が出たまま**になる。
+  // 「保存 (1/3)」と出て押すと無い物を取りに行き、消した合本の板も並んでいた
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'pinax-gone-'));
+  fs.mkdirSync(path.join(dir2, 'covers'), { recursive: true });
+  const db2 = new Db(dir2);
+  try {
+    const { row: s } = db2.upsertSeries({
+      rootId: 'nas', folder: '[目玉焼き×忍丸] 異世界おもてなしご飯(完)',
+      seriesKey: seriesKeyOf('異世界おもてなしご飯'), title: '異世界おもてなしご飯',
+      author: '目玉焼き×忍丸', completed: true,
+    });
+    const { row: v1 } = db2.upsertVolume({ seriesId: s.id, volumeFrom: 1, volumeTo: 1, unit: '巻', completed: false });
+    const { row: vb } = db2.upsertVolume({ seriesId: s.id, volumeFrom: 1, volumeTo: 4, unit: '巻', completed: true });
+    const put = (volumeId: number | null, name: string, sideLabel: string | null = null): void =>
+      db2.upsertFile({
+        rootId: 'nas', relPath: name, seriesId: s.id, volumeId, size: 100, mtime: null,
+        ext: '.rar', part: '', partNo: null, sideLabel, tags: [],
+      });
+    put(v1.id, '第01巻.rar');
+    put(v1.id, '第01巻 (2).rar');
+    put(vb.id, '第01-04巻.rar');
+    put(null, '特別編.rar', '特別編');
+
+    // 残したのは 第01巻.rar だけ。他は前のスキャンでしか見ていないことにする
+    db2.raw.exec(
+      `UPDATE files SET last_seen_at = '2000-01-01T00:00:00.000Z' WHERE rel_path <> '第01巻.rar'`
+    );
+    assert.equal(db2.markGone('nas', '2020-01-01T00:00:00.000Z'), 3);
+
+    const d = getSeriesDetail(db2, s.id)!;
+    assert.deepEqual(d.volumes.map((v) => v.label), ['第01巻'], '消えた合本の板は出ない');
+    assert.deepEqual(d.volumes[0].files.map((f) => f.relPath), ['第01巻.rar'], '本数は残っている分だけ');
+    assert.deepEqual(d.side, [], '消えた別巻も出ない');
+  } finally {
+    db2.close();
+    fs.rmSync(dir2, { recursive: true, force: true });
+  }
+});

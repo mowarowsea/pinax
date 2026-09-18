@@ -376,8 +376,13 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
   const summary = listSeriesOne(db, s);
   const volumes = db.listVolumes(id);
 
+  /**
+   * **棚から消えたファイルは詳細に出さない。** 行は履歴として残してある (scanner.ts の頭)
+   * が、混ぜると押せる「保存」の付いた板として並ぶ。押した先にファイルは無い。
+   * 分割書庫の本数 (保存 1/3) も大きさの合計も、消えた分まで数えてしまう。
+   */
   const fileRows = db.raw
-    .prepare('SELECT * FROM files WHERE series_id = ? ORDER BY rel_path')
+    .prepare('SELECT * FROM files WHERE series_id = ? AND present = 1 ORDER BY rel_path')
     .all(id) as Record<string, unknown>[];
 
   const toFile = (r: Record<string, unknown>): VolumeDetail['files'][number] => ({
@@ -417,10 +422,15 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
     return undefined;
   };
 
-  const details: VolumeDetail[] = volumes.map((v) => {
+  /**
+   * **棚から消えた巻は板ごと落とす。** markGone は行を消さずに present を倒すだけなので、
+   * 合本を解いた後の「第01-04巻」のような巻が volumes に残る。数直線 (holdingsOf) は
+   * 既に present で切っているので、ここだけが消えた巻を出していた。
+   */
+  const details: VolumeDetail[] = volumes.filter((v) => v.present).map((v) => {
     const cover = coverFor(v);
     const coverId = cover?.id;
-    const mine = fileRows.filter((r) => Number(r.volume_id) === v.id && Number(r.present) === 1);
+    const mine = fileRows.filter((r) => Number(r.volume_id) === v.id);
     return {
       id: v.id,
       volumeFrom: v.volumeFrom,
@@ -434,7 +444,7 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
       coverUrl: coverId ? `/api/covers/${coverId}` : null,
       coverPinned: Number(cover?.pinned ?? 0) === 1,
       duplicate: new Set(mine.map(fileBaseOf)).size > 1,
-      files: fileRows.filter((r) => Number(r.volume_id) === v.id).map(toFile),
+      files: mine.map(toFile),
     };
   });
 
