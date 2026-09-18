@@ -118,14 +118,24 @@ export interface WriteCoverInput {
   pinned?: boolean;
 }
 
-/** covers に 1 行置く。画像は既に焼いてある前提 */
+/**
+ * covers に 1 行置く。画像は既に焼いてある前提。
+ *
+ * **代表表紙 (volumeNo === null) は衝突の宛先が違う。** SQLite は一意制約の中で
+ * NULL 同士を別物として扱うので、`UNIQUE(series_id, volume_no)` は代表を縛れない。
+ * 縛れないと ON CONFLICT が一度も当たらず、取り直すたびに行が増えて、
+ * 読む側が拾う一番古い行 — **一番最初に貼った絵** — が棚に残り続ける。
+ * 下の pinned の守りも、衝突しない以上は一度も効かない。
+ * 代表だけ部分索引 (db.ts の covers_series_cover) を名指しする。
+ */
 export function writeCover(db: Db, input: WriteCoverInput): void {
   const pinned = input.pinned ? 1 : 0;
+  const target = input.volumeNo === null ? '(series_id) WHERE volume_no IS NULL' : '(series_id, volume_no)';
   db.raw
     .prepare(
       `INSERT INTO covers (series_id, volume_no, provider, source_url, isbn, file, bytes, content_type, pinned, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(series_id, volume_no) DO UPDATE SET
+       ON CONFLICT ${target} DO UPDATE SET
          provider = excluded.provider, source_url = excluded.source_url, isbn = excluded.isbn,
          file = excluded.file, bytes = excluded.bytes, content_type = excluded.content_type,
          pinned = excluded.pinned, created_at = excluded.created_at

@@ -303,9 +303,42 @@ export class Db {
     if (!cols('files').has('side_label')) {
       this.raw.exec('ALTER TABLE files ADD COLUMN side_label TEXT');
     }
+    /**
+     * 代表表紙 (covers.volume_no IS NULL) を作品ごとに 1 行へ畳む。
+     *
+     * `UNIQUE(series_id, volume_no)` は**代表には効いていなかった。** SQLite は
+     * 一意制約の中で NULL 同士を別物として扱うので、writeCover の
+     * `ON CONFLICT(series_id, volume_no)` が代表では一度も当たらず、
+     * 取り直すたびに行が増えていた (手元の棚で 520 作品に 1637 行、
+     * うち 149 作品は行によって**中身の違う絵**を指していた。2026-09-18 に実測)。
+     *
+     * 読む側 (catalog.ts) は並べ替えずに 1 行引くので、拾うのは**一番古い行**になる。
+     * つまり最初に貼った絵が棚の顔に居座り、後から取り直しても変わらず、
+     * **画面で「代表にする」を押しても効かない** (pinned を立てた行が新しい方に居るため)。
+     *
+     * 残すのは「人が選んだ行 → 新しい行」の順に 1 行だけ。焼いた画像には触らない
+     * (同じ file を他の巻の行が指している)。以後は下の部分索引が増殖を止める。
+     */
+    this.raw.exec(
+      `DELETE FROM covers WHERE volume_no IS NULL AND id NOT IN (
+         SELECT id FROM (
+           SELECT id, ROW_NUMBER() OVER (
+             PARTITION BY series_id ORDER BY pinned DESC, id DESC
+           ) AS rn FROM covers WHERE volume_no IS NULL
+         ) WHERE rn = 1
+       )`
+    );
+
     // 列を足した後に張る。SCHEMA 側に置くと、既にある DB では列より先に走って失敗する
     this.raw.exec('CREATE INDEX IF NOT EXISTS series_enriched_idx ON series(enriched_at)');
     this.raw.exec('CREATE INDEX IF NOT EXISTS bib_cover_tried_idx ON bib(cover_tried_at)');
+    /**
+     * 代表表紙は作品に 1 枚。**NULL を含む一意制約の代わり**に部分索引で縛る。
+     * writeCover はここを ON CONFLICT の宛先に名指しする
+     */
+    this.raw.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS covers_series_cover ON covers(series_id) WHERE volume_no IS NULL'
+    );
   }
 
   /** この bib 行の表紙を取りに行った印。**失敗した時こそ押す** */
