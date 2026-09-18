@@ -13,6 +13,14 @@ import type { CandidateProvider } from './bib/candidates.js';
 import { searchNdl } from './bib/ndl.js';
 import { cachedFetch } from './bib/cache.js';
 import { scanAll, scanRoot } from './scan/scanner.js';
+import {
+  ArchiveError,
+  contentTypeOf,
+  isReadableArchive,
+  readPage,
+  readPageIndex,
+  type PageIndex,
+} from './archive.js';
 import { openInExplorer, resolveInsideRoot, revealAbility } from './reveal.js';
 import { applyRename, planRename, RenameError } from './rename.js';
 import { planFolderName, planVolumeName } from './naming.js';
@@ -653,6 +661,164 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
 
     reply.header('Content-Length', String(stat.size));
     return fs.createReadStream(abs);
+  });
+
+  // ---- 書庫の中を読む -----------------------------------------------------
+
+  /**
+   * ページを取り出すのに 1 か所だけ書き込みが要る (unrar がファイルへしか出せない)。
+   * **書き先は必ず棚の外。** `data/` の下に置いて、組み立てる時に一度確かめておく。
+   * ここを間違えると漫画ファイルの隣に書きに行くことになる。
+   */
+  const pageTmp = path.join(cfg.dataDir, 'pages');
+  fs.mkdirSync(pageTmp, { recursive: true });
+  for (const r of cfg.roots) {
+    const base = path.resolve(r.path);
+    if (path.resolve(pageTmp) === base || path.resolve(pageTmp).startsWith(base + path.sep)) {
+      throw new Error(`ページの取り出し先が蔵書の中にあります: ${pageTmp}`);
+    }
+  }
+
+  const fileAt = async (id: string): Promise<{ row: Record<string, unknown>; abs: string; stat: fs.Stats }> => {
+    const row = db.raw.prepare('SELECT * FROM files WHERE id = ?').get(Number(id)) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) throw new HttpError(404, 'そのファイルはありません');
+    const root = rootById(String(row.root_id));
+    let abs: string;
+    try {
+      abs = resolveInsideRoot(root.path, String(row.rel_path));
+    } catch {
+      throw new HttpError(400, '蔵書の外を指しています');
+    }
+    try {
+      return { row, abs, stat: await fsp.stat(abs) };
+    } catch {
+      throw new HttpError(404, `実ファイルが見当たりません: ${String(row.rel_path)}`);
+    }
+  };
+
+  /**
+   * 書庫の索引を作るのは**一度に 1 冊だけ**にする。
+   *
+   * rar の一覧は SMB 越しにヘッダを追うので 1 冊 1 秒前後 (実測の中央値 1.3 秒、
+   * 大きいもので 20 秒超) かかり、その間 wasm の同期読みでイベントループが止まる。
+   * 何冊も同時に開かれると止まる時間が足し算になり、`/api/health` が返らなくなって
+   * LocalLauncher に死んだと見なされる (docs/ARCHITECTURE.md 8.4 と同じ筋の話)。
+   *
+   * **一度作れば覚えるので、待つのは初回だけ。** 読む口が本式になったら
+   * ここはワーカースレッドへ出す。今は直列にして被害を足し算にしないだけ。
+   */
+  let indexChain: Promise<unknown> = Promise.resolve();
+  const inFlight = new Map<number, Promise<PageIndex>>();
+
+  const pageIndexOf = async (
+    id: string,
+    opts: { refresh?: boolean } = {}
+  ): Promise<{ fileId: number; row: Record<string, unknown>; abs: string; index: PageIndex; buildMs: number; cached: boolean }> => {
+    const { row, abs, stat } = await fileAt(id);
+    const fileId = Number(row.id);
+    const ext = path.extname(abs).toLowerCase();
+    if (!isReadableArchive(ext)) {
+      throw new HttpError(415, `${ext || 'この形式'} は開けません (zip と rar だけです)`);
+    }
+    const mtime = stat.mtime.toISOString();
+
+    if (!opts.refresh) {
+      const hit = db.getPageIndex(fileId, stat.size, mtime);
+      if (hit) return { fileId, row, abs, index: hit, buildMs: 0, cached: true };
+    }
+
+    const running = inFlight.get(fileId);
+    if (running) {
+      const index = await running;
+      return { fileId, row, abs, index, buildMs: 0, cached: true };
+    }
+
+    const job = indexChain.then(async () => {
+      const t0 = Date.now();
+      let index: PageIndex;
+      try {
+        index = await readPageIndex(abs, pageTmp);
+      } catch (e) {
+        if (e instanceof ArchiveError) throw new HttpError(422, e.reason);
+        throw new HttpError(422, `書庫を開けませんでした: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      const buildMs = Date.now() - t0;
+      db.putPageIndex({ fileId, size: stat.size, mtime, index, buildMs });
+      return { index, buildMs };
+    });
+    indexChain = job.catch(() => undefined);
+    inFlight.set(
+      fileId,
+      job.then((r) => r.index)
+    );
+    try {
+      const { index, buildMs } = await job;
+      return { fileId, row, abs, index, buildMs, cached: false };
+    } finally {
+      inFlight.delete(fileId);
+    }
+  };
+
+  /**
+   * 1 冊の中に何ページあって、どういう順に並んでいるか。
+   *
+   * **絵は返さない。** ここで返すのは名前と大きさだけで、実物は 1 枚ずつ
+   * `/api/files/:id/page/:i` から取る。索引と実物を分けるのは、索引が
+   * 1 冊 1 回で済むのに対し実物は 200 回要るため。
+   */
+  app.get<{ Params: { id: string }; Querystring: { refresh?: string } }>(
+    '/api/files/:id/pages',
+    async (req) => {
+      const got = await pageIndexOf(req.params.id, { refresh: req.query.refresh === '1' });
+      return {
+        fileId: got.fileId,
+        name: path.basename(String(got.row.rel_path)),
+        format: got.index.format,
+        count: got.index.pages.length,
+        pages: got.index.pages.map((p, i) => ({ i, name: p.name, bytes: p.bytes })),
+        // 画像でなかった中身。0 ページだった時に理由が画面から読めるように残す
+        skipped: got.index.skipped,
+        nested: got.index.nested,
+        buildMs: got.buildMs,
+        cached: got.cached,
+      };
+    }
+  );
+
+  /**
+   * ページ 1 枚。
+   *
+   * **番号で指す。** 名前で指させると、書庫の中の名前がそのまま URL に出て、
+   * 中身の名前を打ち替えただけで壊れる。並びは索引が決めたものが正。
+   */
+  app.get<{ Params: { id: string; i: string } }>('/api/files/:id/page/:i', async (req, reply) => {
+    const got = await pageIndexOf(req.params.id);
+    const i = Number(req.params.i);
+    const page = Number.isInteger(i) ? got.index.pages[i] : undefined;
+    if (!page) throw new HttpError(404, `そのページはありません: ${req.params.i}`);
+
+    /**
+     * **同じ絵は二度取りに来させない。** 1 ページ 350KB 前後 (中央値) で
+     * 1 冊 190 ページ前後あるので、行きつ戻りつするだけで軽く数十 MB になる。
+     * 中身が変われば mtime が動いて索引ごと作り直されるので、印は強く付けてよい。
+     */
+    const tag = `"${String(got.row.size)}-${String(got.row.mtime)}-${i}"`;
+    if (String(req.headers['if-none-match'] ?? '') === tag) return reply.code(304).send();
+
+    let buf: Buffer;
+    try {
+      buf = await readPage(got.abs, page.name, pageTmp);
+    } catch (e) {
+      if (e instanceof ArchiveError) throw new HttpError(422, e.reason);
+      throw e;
+    }
+    reply.header('Content-Type', contentTypeOf(page.name));
+    reply.header('Cache-Control', 'private, max-age=31536000, immutable');
+    reply.header('ETag', tag);
+    reply.header('Content-Length', String(buf.length));
+    return reply.send(buf);
   });
 
   // ---- 画面 ---------------------------------------------------------------

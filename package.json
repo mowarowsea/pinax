@@ -17,11 +17,13 @@
     "covers": "node --no-warnings=ExperimentalWarning --import tsx src/cli-covers.ts",
     "whoami": "node --no-warnings=ExperimentalWarning --import tsx src/cli-whoami.ts",
     "published": "node --no-warnings=ExperimentalWarning --import tsx src/cli-published.ts",
-    "inbox": "node --no-warnings=ExperimentalWarning --import tsx src/cli-inbox.ts"
+    "inbox": "node --no-warnings=ExperimentalWarning --import tsx src/cli-inbox.ts",
+    "pages": "node --no-warnings=ExperimentalWarning --import tsx src/cli-pages.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.3",
-    "fastify": "^5.12.3"
+    "fastify": "^5.12.3",
+    "node-unrar-js": "^2.0.2"
   },
   "devDependencies": {
     "@types/node": "^24",

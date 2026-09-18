@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import type { PageIndex } from './archive.js';
 import { parseLibraryEntry } from './naming.js';
 
 /**
@@ -171,6 +172,26 @@ CREATE TABLE IF NOT EXISTS events (
   notified_at TEXT
 );
 CREATE INDEX IF NOT EXISTS events_created_idx ON events(created_at DESC);
+
+-- 書庫の中のページの並び。**ページそのものは持たない。** ここにあるのは
+-- 「何という名前のページが何番目か」だけで、絵は毎回書庫から読む (src/archive.ts の頭)。
+--
+-- 覚えておくのは rar の一覧が SMB 越しに 1 冊 1 秒前後かかるため (大きいもので 20 秒超)。
+-- **size と mtime が変わったら作り直す** — 覚えた内容を信じ続けると、書庫を入れ替えた時に
+-- 無いページを指したまま動く。ファイルが正、という土台はここでも崩さない。
+-- 消えても困らない (もう一度読めば作れる)。
+CREATE TABLE IF NOT EXISTS page_index (
+  file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+  size INTEGER NOT NULL,
+  mtime TEXT NOT NULL,
+  format TEXT NOT NULL,
+  pages TEXT NOT NULL,
+  skipped TEXT NOT NULL,
+  nested INTEGER NOT NULL DEFAULT 0,
+  built_at TEXT NOT NULL,
+  -- 作るのに掛かった時間。速さの話をする時に実測が要る
+  build_ms INTEGER NOT NULL DEFAULT 0
+);
 
 CREATE TABLE IF NOT EXISTS scans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -686,6 +707,50 @@ export class Db {
            fetched_at = excluded.fetched_at, expires_at = excluded.expires_at`
       )
       .run(input.key, input.provider, input.url, input.status, input.contentType, input.body, now(), input.expiresAt);
+  }
+
+  // ---- 書庫の索引 ---------------------------------------------------------
+
+  /**
+   * 覚えてある書庫の索引。**ファイルの姿が変わっていたら渡さない。**
+   * 同じ名前のまま中身を入れ替えることは普通にある (画質違いを置き直す等) ので、
+   * size か mtime が動いていたら黙って null を返して読み直させる。
+   */
+  getPageIndex(fileId: number, size: number, mtime: string): PageIndex | null {
+    const r = this.raw.prepare('SELECT * FROM page_index WHERE file_id = ?').get(fileId) as
+      | Record<string, unknown>
+      | undefined;
+    if (!r) return null;
+    if (Number(r.size) !== size || String(r.mtime) !== mtime) return null;
+    return {
+      format: String(r.format) === 'rar' ? 'rar' : 'zip',
+      pages: JSON.parse(String(r.pages)) as PageIndex['pages'],
+      skipped: JSON.parse(String(r.skipped)) as string[],
+      nested: Number(r.nested) === 1,
+    };
+  }
+
+  putPageIndex(input: { fileId: number; size: number; mtime: string; index: PageIndex; buildMs: number }): void {
+    this.raw
+      .prepare(
+        `INSERT INTO page_index (file_id, size, mtime, format, pages, skipped, nested, built_at, build_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(file_id) DO UPDATE SET
+           size = excluded.size, mtime = excluded.mtime, format = excluded.format,
+           pages = excluded.pages, skipped = excluded.skipped, nested = excluded.nested,
+           built_at = excluded.built_at, build_ms = excluded.build_ms`
+      )
+      .run(
+        input.fileId,
+        input.size,
+        input.mtime,
+        input.index.format,
+        JSON.stringify(input.index.pages),
+        JSON.stringify(input.index.skipped),
+        input.index.nested ? 1 : 0,
+        now(),
+        Math.round(input.buildMs)
+      );
   }
 
   cacheStats(): Record<string, unknown>[] {
