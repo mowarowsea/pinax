@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseFilename, parseLibraryEntry, splitFilename } from './naming.js';
+import { parseFilename, parseLibraryEntry, planVolumeName, splitFilename } from './naming.js';
 import { seriesKeyOf, stripCompletionMark } from './volume.js';
 
 /**
@@ -176,4 +176,40 @@ test('共著は著者としてそのまま持つ (キーには入れない)', ()
   assert.equal(e.series.title, 'レイリ');
   // 著者違いで同じ作品が割れないこと (実物に [村田雄介] と [村田雄介 ONE] が両方ある)
   assert.equal(seriesKeyOf('ワンパンマン'), seriesKeyOf('ワンパンマン'));
+});
+
+/**
+ * 棚にまだ無い作品へ渡す名前。**実物と一字一句同じ形が出ること**だけを見ている。
+ * ここがずれた名前を渡すと、人がそのとおりに付け替えた後で棚が拾えない。
+ */
+test('これから付ける巻のファイル名', () => {
+  // \\192.168.3.30\disk1_pt1\manga にある実物
+  assert.equal(planVolumeName('ヤマシタトモコ', '違国日記', 1, 1), '[ヤマシタトモコ] 違国日記 第01巻');
+  assert.equal(planVolumeName('ヤマシタトモコ', '違国日記', 11, 11, { completed: true }),
+    '[ヤマシタトモコ] 違国日記 第11巻(完)');
+  assert.equal(planVolumeName('小川麻衣子', 'ひとりぼっちの地球侵略', 1, 3),
+    '[小川麻衣子] ひとりぼっちの地球侵略 第01-03巻');
+  // 著者が無ければ [] も出さない (フォルダ名と同じ決まり)
+  assert.equal(planVolumeName(null, '同人誌', 2, 2), '同人誌 第02巻');
+  assert.equal(planVolumeName('あずまきよひこ', 'よつばと!', 15, 15, { unit: '話' }),
+    '[あずまきよひこ] よつばと! 第15話');
+});
+
+test('完結マークは巻の後ろに 1 つだけ', () => {
+  // 作品名に既に (完) が入っていても二重にしない。フォルダ名から写してくると起きる
+  assert.equal(planVolumeName('あらゐけいいち', '日常(完)', 10, 10, { completed: true }),
+    '[あらゐけいいち] 日常 第10巻(完)');
+  // 付けた名前を読み戻せること。ここが噛み合わないと棚に入れた瞬間に別物になる
+  const e = parseFilename(planVolumeName('藤田和日郎', 'からくりサーカス', 43, 43, { completed: true }) + '.rar');
+  assert.equal(e.author, '藤田和日郎');
+  assert.equal(e.title, 'からくりサーカス');
+  assert.equal(e.volumeFrom, 43);
+  assert.equal(e.completed, true);
+});
+
+test('使えない文字は倒す。作品名が無ければ名前も無い', () => {
+  // Windows がファイル名に使えない文字は消さずに全角へ (情報を落とさない)
+  assert.equal(planVolumeName('CLAMP', 'ちょびっツ?', 1, 1), '[CLAMP] ちょびっツ？ 第01巻');
+  assert.equal(planVolumeName('誰か', '   ', 1, 1), null);
+  assert.equal(planVolumeName('誰か', '(完)', 1, 1), null);
 });

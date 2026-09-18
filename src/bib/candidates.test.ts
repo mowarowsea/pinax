@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  byVolumeOf, groupCandidates, imageCandidatesOf, ndlCandidate, splitCandidateTitle, type Candidate,
+  byVolumeOf, groupCandidates, imageCandidatesOf, ndlCandidate, splitCandidateTitle, tidyAuthorName,
+  type Candidate,
 } from './candidates.js';
 import type { NdlRecord } from './ndl.js';
 
@@ -190,4 +191,34 @@ test('巻を指定しなければ束の絵を全部出す', () => {
   // 代表表紙を探す時の道。巻の絵が 1 枚も焼けなかった作品でここを使う
   const group = groupCandidates(ARMS)[0];
   assert.equal(imageCandidatesOf(group, null).length, ARMS.length);
+});
+
+/**
+ * 著者の寄せ方。ここに並んでいるのは **NDL が実際に返してきた表記** で、
+ * data/pinax.db の bib から採った (2026-09-19)。棚のフォルダは `[藤田和日郎]` と
+ * 詰めて書いているので、そこへ寄せられないと名前を作る画面が使い物にならない。
+ */
+test('NDL の典拠の形を棚の書き方へ寄せる', () => {
+  assert.equal(tidyAuthorName('藤田, 和日郎, 1964-'), '藤田和日郎');
+  assert.equal(tidyAuthorName('三浦, 建太郎, 1966-2021'), '三浦建太郎');
+  assert.equal(tidyAuthorName('内藤, 泰弘'), '内藤泰弘');
+  // 生没年しか付いていない人。年を落とすと名前だけが残る
+  assert.equal(tidyAuthorName('Rootport, 1985-'), 'Rootport');
+  // NDL が姓名を切り違えている実物 (大暮維人)。**繋げば直る**
+  assert.equal(tidyAuthorName('大, 暮維人'), '大暮維人');
+});
+
+test('欧文は詰めずに名を先へ戻す', () => {
+  assert.equal(tidyAuthorName('Christensen, Troy'), 'Troy Christensen');
+  assert.equal(tidyAuthorName('Tolstoy, Leo, 1828-1910'), 'Leo Tolstoy');
+});
+
+test('コンマの無いものには触らない', () => {
+  assert.equal(tidyAuthorName('CLAMP'), 'CLAMP');
+  // 楽天の姓名の間の空白。**詰めない** — [西尾維新 暁月あきら] のような
+  // 人と人の間の空白と機械には見分けが付かず、詰めると 2 人が 1 人に繋がる
+  assert.equal(tidyAuthorName('広江 礼威'), '広江 礼威');
+  assert.equal(tidyAuthorName('村田雄介 ONE'), '村田雄介 ONE');
+  assert.equal(tidyAuthorName(null), null);
+  assert.equal(tidyAuthorName('  '), null);
 });

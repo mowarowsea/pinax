@@ -256,9 +256,9 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .rnbox { margin: 12px 0 0; padding: 12px; border: 1px solid var(--line); border-left: 3px solid var(--brand);
   border-radius: var(--radius); background: var(--panel); display: grid; gap: 10px; }
 .rnbox label.fld { display: grid; gap: 4px; font-size: 11.5px; color: var(--ink-3); flex: 1 1 200px; }
-.rnbox input[type=text] { border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+.rnbox input[type=text], .rnbox input[type=number] { border: 1px solid var(--line); background: var(--bg); color: var(--ink);
   border-radius: 8px; padding: 8px 12px; font-size: 14px; width: 100%; }
-.rnbox input[type=text]:focus { outline: 2px solid var(--brand-soft); border-color: var(--brand); }
+.rnbox input[type=text]:focus, .rnbox input[type=number]:focus { outline: 2px solid var(--brand-soft); border-color: var(--brand); }
 .rnrow { display: flex; gap: 10px; flex-wrap: wrap; }
 .rnplan { font-size: 12.5px; border-radius: 8px; padding: 9px 12px; background: var(--brand-soft); color: var(--ink-2); }
 .rnplan .rnto { font-weight: 700; color: var(--brand); word-break: break-all; }
@@ -268,6 +268,21 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .rnacts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .rnacts .go { border-color: var(--brand); color: var(--brand); font-weight: 700; }
 .rnnote { font-size: 11.5px; color: var(--ink-3); }
+
+/* ---- 棚に無い作品の名前を作る ---- */
+.nm-out { display: grid; gap: 5px; }
+.nm-cap { font-size: 11px; color: var(--ink-3); margin-top: 7px; }
+.nm-hint { font-size: 11.5px; color: var(--ink-3); }
+.rnbox label.fld.num { flex: 0 1 132px; }
+.nm-row { display: flex; gap: 8px; align-items: center; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 7px; padding: 5px 6px 5px 10px; }
+/* 名前は等幅で出す。[ ] と数字の並びを目で確かめる紙なので、字幅が揃っている方が読める */
+.nm-name { flex: 1 1 auto; min-width: 0; font-size: 12.5px; line-height: 1.45; word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.nm-row .mini { flex: none; }
+.nm-row.folder { border-color: var(--brand); }
+.nm-row.folder .nm-name { font-weight: 700; color: var(--brand); }
+.nm-sep { font-size: 11.5px; color: var(--ink-3); margin: 18px 0 10px; padding-top: 14px; border-top: 1px solid var(--line); }
 
 /* ---- 表紙を選ぶ ----
    詳細の板の中で中身だけ差し替える。もう 1 枚重ねると、Android の戻るで
@@ -379,6 +394,7 @@ button.cover { border: 0; padding: 0; font: inherit; }
     <div class="acts" id="acts">
       <button class="btn" id="scan">棚を読み直す</button>
       <button class="btn" id="fill">表紙を進める</button>
+      <button class="btn" id="names">名前を作る</button>
     </div>
   </div>
   <div class="tools">
@@ -434,6 +450,35 @@ function toast(msg, ms = 3000) {
   t.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+}
+
+/**
+ * 文字列を写す。
+ *
+ * **navigator.clipboard は http の相手には無い。** pinax は Tailscale 越しの
+ * 生の http でも開くので、そこでは undefined になって落ちる。見えない textarea に
+ * 入れて execCommand で写す古い道を残しておく (それも駄目なら選んでもらう)。
+ */
+async function copyText(s) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(s);
+      return true;
+    }
+  } catch { /* 下の道へ落ちる */ }
+  const ta = document.createElement('textarea');
+  ta.value = s;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '0';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, s.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  ta.remove();
+  return ok;
 }
 
 async function api(path, opts) {
@@ -1247,6 +1292,262 @@ async function useOneCover(btn) {
   }
 }
 
+// ---- 棚に無い作品の名前を作る -------------------------------------------
+
+/**
+ * **棚を一切触らない道具。** 手元にあるのに棚へ出てこないファイル — 名前が
+ * 決まりから外れていて拾われないもの — に付ける名前を作って渡すだけ。
+ *
+ * 拾われないから棚からは直せず (「名前を直す」は既にある作品を動かす口)、
+ * 直せないから拾われない。その堂々巡りを切るために、**作品に紐付かない入口**を
+ * 棚の操作の並びに置いてある。
+ *
+ * 正しい書名と著者は外の書誌に聞く (表紙選びと同じ検索)。ただし**決めるのは人**。
+ * NDL の著者は `藤田, 和日郎, 1964-` の形で来るし (tidyAuthorName で寄せる)、
+ * `大, 暮維人` のように切り違えている記録もあるので、写した後に直せる欄に出す。
+ */
+const namer = {
+  // 探す側
+  q: '', author: '', provider: 'all', groups: [], note: '', warn: false, body: '',
+  // 組み立てる側。欄の中身が正で、ここは読み取った控え
+  mkAuthor: '', mkTitle: '', completed: false, from: '1', to: '1', last: '',
+  plan: null, planNote: '',
+};
+
+function nmRowHtml(name, kind) {
+  return `<div class="nm-row${kind ? ' ' + kind : ''}">
+    <span class="nm-name">${esc(name)}</span>
+    <button class="mini" data-copy="${esc(name)}">コピー</button>
+  </div>`;
+}
+
+function nmOutHtml() {
+  if (namer.planNote) return `<div class="pk-note warn">${esc(namer.planNote)}</div>`;
+  const p = namer.plan;
+  if (!p) return '<div class="nm-hint">作品名を入れると、ここに名前が出ます</div>';
+  return `${p.folder ? `<div class="nm-cap">フォルダ</div>${nmRowHtml(p.folder, 'folder')}` : ''}
+    <div class="nm-cap">ファイル — 拡張子は手元のもの (.rar / .zip) をそのまま残してください</div>
+    ${p.volumes.map((v) => nmRowHtml(v.name)).join('')}
+    ${p.note ? `<div class="nm-hint">${esc(p.note)}</div>` : ''}
+    ${p.volumes.length > 1 ? '<div class="rnacts"><button class="mini" id="nm-all">ファイル名を全部コピー</button></div>' : ''}`;
+}
+
+function nmGroupHtml(g) {
+  const years = g.firstYear
+    ? (g.lastYear && g.lastYear !== g.firstYear ? `${g.firstYear}〜${g.lastYear}年` : `${g.firstYear}年`)
+    : '';
+  const vols = g.volumeMax
+    ? `${volLabel(g.volumes[0])}〜${volLabel(g.volumeMax)} (${g.volumes.length}冊)`
+    : '巻の並びなし';
+  const meta = [g.authorName || g.author, years, vols, g.publisher].filter(Boolean).join(' · ');
+  return `<div class="pk-group">
+    <span class="pk-g-cover">${pkCover(g.coverUrl, g.title)}</span>
+    <div class="pk-g-info">
+      <div class="pk-g-title">${esc(g.title)}
+        ${g.providers.map((x) => `<span class="pk-tag">${PROVIDER_LABEL[x] ?? x}</span>`).join('')}</div>
+      <div class="pk-g-meta">${esc(meta)}</div>
+      <div class="pk-g-acts"><button class="btn primary" data-take="${esc(g.key)}">この書名を使う</button></div>
+    </div>
+  </div>`;
+}
+
+const nmResHtml = () =>
+  `${namer.note ? `<div class="pk-note${namer.warn ? ' warn' : ''}">${esc(namer.note)}</div>` : ''}${namer.body}`;
+
+function namerHtml() {
+  return `<div class="rnbox">
+    <div class="rnrow">
+      <label class="fld">著者
+        <input type="text" id="nm-author" value="${esc(namer.mkAuthor)}" placeholder="[ ] に入る名前"></label>
+      <label class="fld">作品名
+        <input type="text" id="nm-title" value="${esc(namer.mkTitle)}" placeholder="正しい作品名"></label>
+    </div>
+    <div class="rnrow">
+      <label class="fld num">最初の巻
+        <input type="number" id="nm-from" min="0" max="9999" value="${esc(namer.from)}"></label>
+      <label class="fld num">最後の巻
+        <input type="number" id="nm-to" min="0" max="9999" value="${esc(namer.to)}"></label>
+      <label class="fld num">(完) を付ける巻
+        <input type="number" id="nm-last" min="0" max="9999" value="${esc(namer.last)}" placeholder="なし"></label>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="nm-completed"${namer.completed ? ' checked' : ''}>
+      <span class="track"></span>
+      <span>完結済み — フォルダ名に (完) を書く</span>
+    </label>
+    <div class="nm-out" id="nm-out">${nmOutHtml()}</div>
+  </div>
+  <div class="nm-sep">正しい書名が分からない時は、ここで探して上の欄へ写す</div>
+  <div class="pk-form">
+    <input id="nm-q" value="${esc(namer.q)}" placeholder="作品名" autocomplete="off">
+    <input id="nm-qa" value="${esc(namer.author)}" placeholder="著者" autocomplete="off">
+    <select class="sort" id="nm-provider">
+      <option value="all">全部に聞く</option>
+      <option value="ndl">NDL だけ</option>
+      <option value="rakuten">楽天だけ</option>
+      <option value="google">Google だけ</option>
+    </select>
+    <button class="btn primary" id="nm-go">探す</button>
+  </div>
+  <div id="nm-res">${nmResHtml()}</div>`;
+}
+
+/**
+ * 名前を作る板を開く。詳細と同じく履歴を 1 つ積む (Android の戻るで閉じるため)。
+ * mode は openDetail と同じ意味で、'entry' は `#/names` を直に開いた時。
+ */
+function openNamer(mode = 'push') {
+  showSheet();
+  if (mode === 'push') history.pushState({ sheetId: 'names' }, '', '#/names');
+  else history.replaceState({ sheetId: 'names', entry: true }, '', '#/names');
+  // **板に出ているのは作品ではない。** lastDetail を残したままにすると、
+  // 棚を読み直した後にここが作品の詳細へ化ける (読み直しは開いた板を貼り直す)
+  lastDetail = null;
+  $('sheet-title').textContent = '名前を作る';
+  $('detail').innerHTML = namerHtml();
+  $('detail').scrollTop = 0;
+  $('nm-provider').value = namer.provider;
+  wireNamer();
+  refreshNames();
+}
+
+let nmTimer = null;
+let nmSeq = 0;
+const scheduleNames = () => { clearTimeout(nmTimer); nmTimer = setTimeout(refreshNames, 250); };
+
+/**
+ * 欄の中身から名前を組み立て直す。**組み立てはサーバーに聞く** —
+ * 使えない文字の倒し方も、長い名前の詰め方も、(完) の置き場所も naming.ts が
+ * 持っている。ここに写した瞬間、書く側と読む側が別々の決まりを持ち始める。
+ */
+async function refreshNames() {
+  clearTimeout(nmTimer);
+  const out = $('nm-out');
+  if (!out) return;
+  namer.mkAuthor = $('nm-author').value.trim();
+  namer.mkTitle = $('nm-title').value.trim();
+  namer.from = $('nm-from').value;
+  namer.to = $('nm-to').value;
+  namer.last = $('nm-last').value;
+  namer.completed = $('nm-completed').checked;
+  namer.planNote = '';
+
+  if (!namer.mkTitle) {
+    namer.plan = null;
+    out.innerHTML = nmOutHtml();
+    return;
+  }
+  const seq = ++nmSeq;
+  const p = new URLSearchParams({
+    title: namer.mkTitle, author: namer.mkAuthor,
+    from: namer.from, to: namer.to, last: namer.last,
+  });
+  if (namer.completed) p.set('completed', '1');
+  try {
+    const plan = await api('/api/names?' + p);
+    if (seq !== nmSeq) return;  // まだ打っている。古い答えで上書きしない
+    namer.plan = plan;
+  } catch (e) {
+    if (seq !== nmSeq) return;
+    namer.plan = null;
+    namer.planNote = e.message;
+  }
+  out.innerHTML = nmOutHtml();
+}
+
+async function runNamerSearch() {
+  namer.note = '';
+  namer.warn = false;
+  namer.body = '<div class="empty"><span class="spin"></span> 外に聞いています</div>';
+  $('nm-res').innerHTML = nmResHtml();
+  try {
+    const r = await api('/api/bib/candidates?' + new URLSearchParams({
+      q: namer.q, author: namer.author, provider: namer.provider,
+    }));
+    namer.groups = r.groups;
+    // **うまくいった時は何も言わない** (表紙選びと同じ)。言うのは相手が落ちた時と 0 件の時
+    const errs = (r.errors ?? []).map((e) => `${e.provider}: ${e.message}`).join(' / ');
+    namer.warn = Boolean(errs);
+    namer.note = r.groups.length ? errs : `候補が見つかりませんでした${errs ? ` — ${errs}` : ''}`;
+    namer.body = r.groups.length ? r.groups.map(nmGroupHtml).join('') : '';
+  } catch (e) {
+    namer.groups = [];
+    namer.warn = true;
+    namer.note = '失敗: ' + e.message;
+    namer.body = '';
+  }
+  $('nm-res').innerHTML = nmResHtml();
+  wireNamerResults();
+}
+
+/** 束の書名と著者を上の欄へ写す。**完結かどうかは写さない** — 外の書誌は知らない */
+function takeGroup(key) {
+  const g = namer.groups.find((x) => x.key === key);
+  if (!g) return;
+  $('nm-title').value = g.title;
+  $('nm-author').value = g.authorName || g.author || '';
+  if (g.volumes.length) {
+    $('nm-from').value = String(g.volumes[0]);
+    $('nm-to').value = String(g.volumeMax);
+  }
+  // **完結の指定は持ち越さない。** 前の作品で入れた「(完) を付ける巻」が残ると、
+  // 巻数の違う別の作品の第11巻に印が付いたままの名前が出る
+  $('nm-completed').checked = false;
+  $('nm-last').value = '';
+  $('detail').scrollTop = 0;
+  refreshNames();
+  toast(`${g.title} を写しました`);
+}
+
+async function copyAndTell(text, what) {
+  const ok = await copyText(text);
+  toast(
+    ok ? `写しました — ${what ?? text}` : '写せませんでした。名前を長押しで選んでコピーしてください',
+    ok ? 2500 : 6000
+  );
+}
+
+function wireNamer() {
+  for (const id of ['nm-author', 'nm-title', 'nm-from', 'nm-to', 'nm-last']) {
+    $(id).addEventListener('input', scheduleNames);
+  }
+  $('nm-completed').addEventListener('change', () => {
+    // 完結を入れたら (完) を付ける巻の既定を最後の巻にする。**入れるだけ** —
+    // 最後まで揃っていない人は欄を空にできる (フォルダの (完) とは別の話)
+    if ($('nm-completed').checked && !$('nm-last').value) $('nm-last').value = $('nm-to').value;
+    refreshNames();
+  });
+
+  $('nm-go').addEventListener('click', () => {
+    namer.q = $('nm-q').value.trim();
+    namer.author = $('nm-qa').value.trim();
+    namer.provider = $('nm-provider').value;
+    runNamerSearch();
+  });
+  for (const id of ['nm-q', 'nm-qa']) {
+    $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') $('nm-go').click(); });
+  }
+
+  // 写す口は名前を打ち直すたびに作り直されるので、親で受ける
+  $('nm-out').addEventListener('click', (e) => {
+    const one = e.target.closest('button[data-copy]');
+    if (one) { copyAndTell(one.dataset.copy); return; }
+    if (e.target.closest('#nm-all')) {
+      const names = (namer.plan?.volumes ?? []).map((v) => v.name);
+      // 改行は CRLF。写した先がメモ帳でも 1 行に潰れないように
+      if (names.length) copyAndTell(names.join('\r\n'), `${names.length} 行`);
+    }
+  });
+
+  wireNamerResults();
+}
+
+function wireNamerResults() {
+  $('nm-res').querySelectorAll('button[data-take]').forEach((b) => {
+    b.addEventListener('click', () => takeGroup(b.dataset.take));
+  });
+}
+
 // ---- シートの開け閉め ---------------------------------------------------
 
 const sheetOpen = () => !$('sheet').hidden;
@@ -1286,6 +1587,7 @@ window.addEventListener('popstate', () => {
     openDetail(Number(m[1]), 'keep').catch((e) => toast('失敗: ' + e.message, 5000));
     return;
   }
+  if (location.hash.startsWith('#/names')) { openNamer('entry'); return; }
   if (sheetOpen()) hideSheet();
 });
 
@@ -1411,12 +1713,15 @@ $('fill').addEventListener('click', async () => {
   b.textContent = '表紙を進める';
 });
 
+$('names').addEventListener('click', () => openNamer());
+
 (async () => {
   await Promise.all([loadStats(), loadNews(), loadGrid()]);
   const m = location.hash.match(/^#\/series\/(\d+)/);
   // 入口がここなら積むものが無い。'entry' で置き換えるだけにして、
   // 戻るは素直に pinax の外へ出す (積んでおくと戻るが空振りする)
   if (m) openDetail(Number(m[1]), 'entry');
+  else if (location.hash.startsWith('#/names')) openNamer('entry');
 })();
 </script>
 </body>

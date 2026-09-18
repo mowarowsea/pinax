@@ -398,6 +398,35 @@ export function planFolderName(
   return safe ? `${safe}${mark}` : null;
 }
 
+/**
+ * これから付けるファイル名を、巻 1 つぶん組み立てる。**拡張子は付けない。**
+ *
+ *   [ヤマシタトモコ] 違国日記 第01巻
+ *   [ヤマシタトモコ] 違国日記 第11巻(完)      完結を指定した最終巻
+ *   [小川麻衣子] ひとりぼっちの地球侵略 第01-03巻
+ *
+ * **拡張子を付けないのは、これが人の手に渡る名前だから。** 棚にまだ無い作品を
+ * 手で付け替えるために出すもので、手元が .rar なのか .zip なのかは分からない。
+ * pinax 自身が棚へ入れる時の名前は planName の方 (あちらは拡張子まで決まる)。
+ *
+ * 完結マークは planFolderName と同じく**詰めた後に足す**。先に足してから詰めると
+ * `(完` の欠けた印が残り、読み戻す側が完結を見落とす。
+ */
+export function planVolumeName(
+  author: string | null | undefined,
+  title: string,
+  from: number,
+  to: number,
+  opts: { unit?: VolumeUnit; completed?: boolean } = {}
+): string | null {
+  const bareTitle = stripCompletionMark(String(title ?? '')).text.trim();
+  const bareAuthor = stripCompletionMark(String(author ?? '')).text.trim() || null;
+  if (!bareTitle) return null;
+  const tail = ` ${formatVolume(from, to, opts.unit ?? '巻')}${opts.completed ? '(完)' : ''}`;
+  const label = sanitizeSegment(seriesLabel(bareAuthor, bareTitle), SEGMENT_MAX - tail.length);
+  return label ? `${label}${tail}` : null;
+}
+
 // ---- 組み立て (PowerDowner から引き取り) -----------------------------------
 
 export interface NameInput {

@@ -65,6 +65,12 @@ export interface CandidateGroup {
    * 著者だけで検索した時に、同じ書名の別作品を見分ける手がかりになる
    */
   author: string | null;
+  /**
+   * 同じ著者を**棚のフォルダ名に書く形**へ寄せたもの (tidyAuthorName)。
+   * `author` が提供元の表記そのままなのに対し、こちらは `[藤田和日郎] …` と
+   * 書くための形。名前を組み立てる画面 (/api/names) の既定値になる
+   */
+  authorName: string | null;
   count: number;
   /** 巻として読めたもの (昇順) */
   volumes: number[];
@@ -97,6 +103,39 @@ function stripSubtitle(s: string): string {
 function toNumber(body: string): number | null {
   const half = body.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
   return /^\d{1,4}$/.test(half) ? Number(half) : null;
+}
+
+/**
+ * 提供元の著者表記を、棚のフォルダ名に書く形へ寄せる。
+ *
+ * NDL は典拠の形で書く — **姓と名がコンマで割れていて、生没年まで付く**:
+ *
+ *   藤田, 和日郎, 1964-       → 藤田和日郎
+ *   三浦, 建太郎, 1966-2021   → 三浦建太郎
+ *   Christensen, Troy         → Troy Christensen
+ *
+ * 棚は `[藤田和日郎]` と詰めて書いているのでそこへ寄せる。欧文だけは詰めずに
+ * 「名 姓」へ戻す — SmithJohn にしてしまうと直しようがない。
+ *
+ * **空白には触らない。** 楽天の `広江 礼威` は姓と名の間の空白だが、棚にある
+ * `[西尾維新 暁月あきら]` `[村田雄介 ONE]` は人と人の間の空白で、機械には
+ * 見分けが付かない。詰めると 2 人の名前が 1 人に繋がる。ここは寄せるだけにして、
+ * 最後は直せる欄に出して人に決めさせる (NDL が `大, 暮維人` と切り違えている
+ * 大暮維人のような記録もある)。
+ */
+export function tidyAuthorName(raw: string | null | undefined): string | null {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  // 生没年は名前ではない。`1964-` `1966-2021`
+  const parts = s
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p && !/^\d{3,4}\s*-\s*\d{0,4}$/.test(p));
+  if (!parts.length) return null;
+  if (parts.length === 1) return parts[0];
+  // 仮名も漢字も無ければ欧文。姓が先に来ているので入れ替える
+  const latin = !/[\u3040-\u30ff\u3400-\u9fff]/u.test(s);
+  return latin ? [...parts].reverse().join(' ') : parts.join('');
 }
 
 /**
@@ -256,6 +295,7 @@ function toGroup(key: string, items: Candidate[]): CandidateGroup {
     ),
     title,
     author,
+    authorName: tidyAuthorName(author),
     count: sorted.length,
     volumes,
     volumeMax: volumes.length ? volumes[volumes.length - 1] : null,
