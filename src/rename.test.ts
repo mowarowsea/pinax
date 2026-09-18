@@ -32,7 +32,7 @@ function seed(folder: string, title: string, author: string | null, files: strin
     const v = db.upsertVolume({ seriesId: row.id, volumeFrom: 1, volumeTo: 1, unit: '巻', completed: false });
     db.upsertFile({
       rootId: root.id, relPath: path.join(folder, name), seriesId: row.id, volumeId: v.row.id,
-      size: 1, mtime: null, ext: '.rar', part: '', partNo: null, tags: [],
+      size: 1, mtime: null, ext: '.rar', part: '', partNo: null, sideLabel: null, tags: [],
     });
   }
   return row.id;
@@ -137,6 +137,37 @@ test('DB に入るのは、次のスキャンがそのフォルダを読んで�
     'DB にはスキャンと同じ答えを入れる'
   );
   assert.equal(plan.warnings.length, 1, '打った名前と違うことは人に見せる');
+});
+
+test('別巻の呼び名は付け替えに付いていく', async () => {
+  // 呼び名はフォルダ名を前置きとして剥がして読んでいるので、フォルダが変われば答えも変わる。
+  // 次のスキャンを待たずにここで読み直さないと、画面の「別巻」が古い名前のまま残る
+  const folder = '[天空すふぃあ] まちがった名前';
+  const id = seed(folder, 'まちがった名前', '天空すふぃあ', ['[天空すふぃあ] まちがった名前 第01巻.rar']);
+  const side = '[天空すふぃあ] まちがった名前 外伝.rar';
+  fs.writeFileSync(path.join(shelf, folder, side), 'x');
+  db.upsertFile({
+    rootId: root.id, relPath: path.join(folder, side), seriesId: id, volumeId: null,
+    size: 1, mtime: null, ext: '.rar', part: '', partNo: null,
+    sideLabel: parseLibraryEntry(path.join(folder, side)).sideLabel, tags: [],
+  });
+  const before = db.raw
+    .prepare('SELECT side_label FROM files WHERE series_id = ? AND volume_id IS NULL')
+    .get(id) as { side_label: string | null };
+  assert.equal(before.side_label, '外伝');
+
+  const plan = planRename(db, root, id, { title: 'ただしい名前', author: '天空すふぃあ', completed: false });
+  assert.equal(plan.losesSide, 1, '読めなくなることは押す前に言う');
+  assert.ok(plan.warnings.some((w) => w.includes('別巻')));
+  await applyRename(db, root, plan, dir);
+
+  const rows = db.raw
+    .prepare('SELECT rel_path, side_label FROM files WHERE series_id = ? AND volume_id IS NULL')
+    .all(id) as { rel_path: string; side_label: string | null }[];
+  assert.equal(rows.length, 1);
+  // ファイル名は古い作品名のまま。フォルダだけが変わったので、剥がせる前置きが無くなる
+  assert.ok(rows[0].rel_path.startsWith('[天空すふぃあ] ただしい名前'));
+  assert.equal(rows[0].side_label, null, '読めなくなったことを隠さない');
 });
 
 test('作品名が空になる指定は断る', () => {

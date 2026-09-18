@@ -19,6 +19,10 @@ import { publishedOf, shelfStateOf, type PublishedInfo, type ShelfState } from '
  *   `Landreaall 第01巻.rar` と `Landreaall ランドリオール 第01巻.zip` … 同じ巻が 2 本 (重複)
  *   巻数表現の無いファイル … 何巻か読めない (欠番の計算に参加しない)
  *
+ * ただし**外伝・特別編は読み違えではない。** `鬼滅の刃 外伝` に巻数が無いのは正しく、
+ * ここで数えると 19 作品の要確認が一生下りずに警告そのものが死ぬ (2026-09-18 に実測)。
+ * 呼び名まで読めたもの (files.side_label) は別巻として数から外す。
+ *
  * どれも**機械には正解が分からない**。別版として両方残したいのか、片方が捨て漏れなのかは
  * 中身を見た人しか決められないので、pinax は数えて並べるところまでをやる。
  */
@@ -27,7 +31,7 @@ export interface SeriesIssues {
   duplicateVolumes: number;
   /** そのうち、1 巻 1 本を超えている分のファイル数 */
   duplicateFiles: number;
-  /** 何巻か読めなかったファイルの数 */
+  /** 何巻か読めなかったファイルの数。**別巻 (外伝・特別編) は含まない** */
   unreadableFiles: number;
   /** どれか 1 つでもあるか */
   any: boolean;
@@ -59,7 +63,7 @@ export interface SeriesSummary {
   present: boolean;
   fileCount: number;
   bytes: number;
-  /** 巻数を読めなかったファイルの数。欠番計算に参加していない */
+  /** 巻数も呼び名も読めなかったファイルの数。欠番計算に参加していない */
   looseFiles: number;
   holdings: Holding[];
   /** 抜けが 1 つでもあるか (**持っている範囲の中の**抜け) */
@@ -112,8 +116,13 @@ const dupFilesSql = (seriesRef: string): string => `(SELECT COALESCE(SUM(n - 1),
      WHERE v.series_id = ${seriesRef} AND v.present = 1
      GROUP BY v.id HAVING n > 1))`;
 
+/**
+ * 巻としても別巻としても読めなかったファイル。**要確認の数はこれ。**
+ * `side_label IS NULL` を外すと外伝を抱えた作品が永久に要確認になる (SeriesIssues の註)
+ */
 const looseFilesSql = (seriesRef: string): string =>
-  `(SELECT COUNT(*) FROM files f WHERE f.series_id = ${seriesRef} AND f.present = 1 AND f.volume_id IS NULL)`;
+  `(SELECT COUNT(*) FROM files f WHERE f.series_id = ${seriesRef} AND f.present = 1
+      AND f.volume_id IS NULL AND f.side_label IS NULL)`;
 
 /**
  * 最後に巻が 1 つ増えた時刻。
@@ -340,9 +349,24 @@ export interface SeriesDetail extends SeriesSummary {
    */
   pick: SeriesPick | null;
   volumes: VolumeDetail[];
-  /** 巻数を読めなかったファイル。欠番には効かないが、持ってはいる */
+  /** 巻ではない収録物 (外伝・特別編・単巻作品) */
+  side: SideVolume[];
+  /** 巻としても別巻としても読めなかったファイル。欠番には効かないが、持ってはいる */
   loose: VolumeDetail['files'];
   bib: Record<string, unknown> | null;
+}
+
+/**
+ * 巻ではない収録物。`鬼滅の刃 外伝` や `四月は君の嘘 Coda`、それに 1 冊で完結している作品。
+ *
+ * **数直線には乗せない。** 外伝を第 n 巻として数えると、持っていない巻ができたり
+ * 最新巻が動いたりする。持っていることだけを言う。
+ * 分割書庫は呼び名でまとまるので、`.part1` `.part2` があっても 1 行になる。
+ */
+export interface SideVolume {
+  /** 作品の中での呼び名。**空なら作品そのもの** (1 冊で完結している作品) */
+  label: string;
+  files: VolumeDetail['files'];
 }
 
 export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
@@ -414,6 +438,20 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
     };
   });
 
+  // 別巻は呼び名でまとめる。分割書庫の .part2 が別の外伝として並ばないように。
+  // 作品そのもの (呼び名が空) を先頭に置く
+  const sideBy = new Map<string, VolumeDetail['files']>();
+  for (const r of fileRows) {
+    if (r.volume_id !== null || r.side_label === null) continue;
+    const key = String(r.side_label);
+    const acc = sideBy.get(key) ?? [];
+    acc.push(toFile(r));
+    sideBy.set(key, acc);
+  }
+  const side: SideVolume[] = [...sideBy]
+    .map(([label, files]) => ({ label, files }))
+    .sort((a, b) => (a.label ? 1 : 0) - (b.label ? 1 : 0) || a.label.localeCompare(b.label, 'ja'));
+
   const bibRow = db.raw
     .prepare('SELECT * FROM bib WHERE series_id = ? AND volume_no IS NULL LIMIT 1')
     .get(id) as Record<string, unknown> | undefined;
@@ -423,7 +461,8 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
     published: publishedOf(db, id, summary.holdings, s.enrichedAt),
     pick: db.getSeriesPick(id),
     volumes: details,
-    loose: fileRows.filter((r) => r.volume_id === null).map(toFile),
+    side,
+    loose: fileRows.filter((r) => r.volume_id === null && r.side_label === null).map(toFile),
     bib: bibRow ? { ...bibRow, raw: JSON.parse(String(bibRow.raw ?? '{}')) } : null,
   };
 }
@@ -432,7 +471,7 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
   const agg = db.raw
     .prepare(
       `SELECT COUNT(*) AS file_count, COALESCE(SUM(size), 0) AS bytes,
-              SUM(CASE WHEN volume_id IS NULL THEN 1 ELSE 0 END) AS loose
+              SUM(CASE WHEN volume_id IS NULL AND side_label IS NULL THEN 1 ELSE 0 END) AS loose
          FROM files WHERE series_id = ? AND present = 1`
     )
     .get(s.id) as unknown as CountRow;

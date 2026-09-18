@@ -243,6 +243,8 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .filelist { display: grid; gap: 8px; font-size: 12px; }
 .filelist .grp { display: grid; gap: 3px; }
 .filelist .grp > b { font-size: 12px; color: var(--gap); font-weight: 600; }
+/* 別巻 (外伝・特別編) は要確認ではない。重複と同じ色の見出しを付けると警告に見える */
+.filelist.side .grp > b { color: var(--brand); }
 .filelist .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; color: var(--ink-2); }
 .filelist .row .nm { word-break: break-all; flex: 1 1 240px; }
 .filelist .row .sz { color: var(--ink-3); font-size: 11px; }
@@ -640,10 +642,11 @@ function detailHtml(d) {
       ${renameBoxHtml(d)}
     </div>
   </div>
-  <h3 class="sec">巻 <span style="font-weight:400">— 表紙を押すとその巻だけ選び直せます</span></h3>
-  <div class="vols">${line.join('')}</div>
+  ${d.volumes.length ? `<h3 class="sec">巻 <span style="font-weight:400">— 表紙を押すとその巻だけ選び直せます</span></h3>
+  <div class="vols">${line.join('')}</div>` : ''}
+  ${sideSectionHtml(d)}
   ${dupSectionHtml(d)}
-  ${d.loose.length ? `<h3 class="sec">巻数を読めなかったファイル</h3>
+  ${d.loose.length ? `<h3 class="sec">巻数も呼び名も読めなかったファイル</h3>
     <div class="filelist">${d.loose.map((f) => fileRowHtml(f)).join('')}</div>` : ''}
   `;
 }
@@ -773,6 +776,20 @@ function fileRowHtml(f) {
     <span class="sz">${mb(f.size)}</span>
     ${caps.reveal.available ? `<button class="mini pc-only" data-reveal-file="${f.id}">場所</button>` : ''}
   </div>`;
+}
+
+/**
+ * 巻ではない収録物を並べる。外伝・特別編と、1 冊で完結している作品。
+ *
+ * **要確認には出さない。** 巻数が付いていないのが正しいものなので、人に直す先が無い。
+ * 呼び名が空のものは作品そのものなので「本編」と書く
+ */
+function sideSectionHtml(d) {
+  if (!d.side || !d.side.length) return '';
+  const grp = (s) =>
+    `<div class="grp"><b>${esc(s.label || '本編')}</b>${s.files.map(fileRowHtml).join('')}</div>`;
+  return `<h3 class="sec">別巻 <span style="font-weight:400">— 巻には数えていません</span></h3>
+  <div class="filelist side">${d.side.map(grp).join('')}</div>`;
 }
 
 /** 同じ巻に複数のファイルがある巻を並べる。多い作品があるので頭から 12 巻だけ出す */

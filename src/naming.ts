@@ -199,6 +199,58 @@ function bareVolumeAfterFolder(fileStem: string, folderName: string): { from: nu
   return single ? { from: Number(single[1]), to: Number(single[1]) } : null;
 }
 
+/** 前置きを剥がすためだけに均す。`_` と全角空白を空白に倒し、空白を畳む */
+function foldForPrefix(s: string): string {
+  return stripCompletionMark(String(s ?? ''))
+    .text.normalize('NFKC')
+    .replace(/[_\u3000]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 作品フォルダ名を前置きとして剥がし、残りを**別巻の名前**として読む。
+ *
+ * `bareVolumeAfterFolder` のちょうど裏返しで、根拠も同じ。あちらは「残りが裸の数字なら
+ * 巻数」、こちらは「残りが数字でないなら外伝・特別編の呼び名」— フォルダという文脈が
+ * ある以上、作品名を除いた残りは**その作品の中での呼び名**以外になりようがない。
+ *
+ *   [吾峠呼世晴] 鬼滅の刃(完)/[吾峠呼世晴] 鬼滅の刃 外伝.rar          → '外伝'
+ *   [新川直司] 四月は君の嘘/[新川直司] 四月は君の嘘 Coda.rar          → 'Coda'
+ *   [尾崎かおり] 神様がうそをつく。/[尾崎かおり] 神様がうそをつく。.zip → ''   (単巻)
+ *   [BETEMIUS] 同人誌/[BETEMIUS] 夕立の手紙.rar                       → null
+ *
+ * **空文字は「フォルダ名そのもの = 1 冊で完結している作品」**で、null (読めなかった) とは
+ * 別物。手元の 37 点では別巻が 10 点・単巻が 4 点・読めないが 23 点だった (2026-09-18)。
+ *
+ * **数字の混じった残りは別巻にしない。** 別巻として読むことは要確認を下ろすことなので、
+ * `c48-49` のような巻数表現の読み落としまで黙らせる方向に効いてしまう。数字があるものは
+ * 巻かもしれないと見て、読めないまま人に見せる方を採る。
+ */
+function sideLabelAfterFolder(fileTitle: string, folderTitle: string): string | null {
+  const file = foldForPrefix(fileTitle);
+  const folder = foldForPrefix(folderTitle);
+  if (!file || !folder) return null;
+
+  // 空白の入れ方は当てにならない (フォルダは `作品～副題～`、ファイルは `作品 ～副題～`)。
+  // 空白を抜いた形で前置きかどうかを決める
+  const fileTight = file.replace(/\s+/g, '').toLowerCase();
+  const folderTight = folder.replace(/\s+/g, '').toLowerCase();
+  if (!fileTight.startsWith(folderTight)) return null;
+  if (fileTight.length === folderTight.length) return '';
+
+  // 残りは人に見せるので、畳んだ方ではなく元の綴りから切り出す。空白を数えながら歩く
+  let seen = 0;
+  let i = 0;
+  while (i < file.length && seen < folderTight.length) {
+    if (!/\s/.test(file[i])) seen++;
+    i++;
+  }
+  const rest = file.slice(i).replace(/^[\s._\-–—:：]+/, '').trim();
+  if (!rest) return '';
+  return /\d/.test(rest) ? null : rest;
+}
+
 /** 作品フォルダ 1 つ分の素性 */
 export interface SeriesIdentity {
   author: string | null;
@@ -219,6 +271,12 @@ export interface LibraryEntry {
   volumeFrom: number | null;
   volumeTo: number | null;
   unit: VolumeUnit;
+  /**
+   * 巻として読めなかったファイルの、作品の中での呼び名 (`外伝` / `Coda`)。
+   * `''` は作品そのもの (単巻)、null は呼び名も読めなかったもの。
+   * **巻として読めたファイルでは常に null** — 巻には巻の呼び名がある
+   */
+  sideLabel: string | null;
   /** この巻に完結マークが付いていたか (作品の完結とは別に持つ) */
   volumeCompleted: boolean;
   tags: string[];
@@ -268,6 +326,11 @@ export function parseLibraryEntry(relPath: string): LibraryEntry {
     }
   }
 
+  // 巻として読めなかったものだけ、作品の中での呼び名として読み直す
+  const sideLabel = volumeFrom === null && folder
+    ? sideLabelAfterFolder(file.title, folder.title)
+    : null;
+
   return {
     relPath,
     folder: hasParent ? parentName : null,
@@ -276,6 +339,7 @@ export function parseLibraryEntry(relPath: string): LibraryEntry {
     volumeFrom,
     volumeTo,
     unit: file.unit,
+    sideLabel,
     volumeCompleted: file.completed,
     tags: file.tags,
     part: file.part,

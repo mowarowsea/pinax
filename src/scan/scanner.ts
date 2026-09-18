@@ -173,6 +173,7 @@ async function scanRootLocked(db: Db, root: LibraryRoot): Promise<ScanResult> {
         ext: e.ext,
         part: e.part,
         partNo: e.partNo,
+        sideLabel: e.sideLabel,
         tags: e.tags,
       });
     }

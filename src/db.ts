@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { parseLibraryEntry } from './naming.js';
 
 /**
  * 蔵書カタログ。Node 内蔵の SQLite だけで動く (追加インストール不要)。
@@ -58,7 +59,10 @@ CREATE TABLE IF NOT EXISTS volumes (
 CREATE INDEX IF NOT EXISTS volumes_series_idx ON volumes(series_id);
 
 -- 実ファイル。volume_id が null なら「巻数を読めなかったファイル」で、
--- 欠番の計算には参加しないが作品には属している
+-- 欠番の計算には参加しないが作品には属している。
+-- そのうち外伝・特別編と読めたものは side_label に呼び名が入る (naming.ts
+-- sideLabelAfterFolder)。**null と空文字を区別すること** — 空文字は「1 冊で完結して
+-- いる作品」、null は「呼び名も読めなかった = 要確認」で、意味がまるで違う
 CREATE TABLE IF NOT EXISTS files (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   root_id TEXT NOT NULL,
@@ -70,6 +74,7 @@ CREATE TABLE IF NOT EXISTS files (
   ext TEXT,
   part TEXT,
   part_no INTEGER,
+  side_label TEXT,
   tags TEXT NOT NULL DEFAULT '[]',
   present INTEGER NOT NULL DEFAULT 1,
   first_seen_at TEXT NOT NULL,
@@ -291,6 +296,13 @@ export class Db {
     if (!cols('covers').has('pinned')) {
       this.raw.exec('ALTER TABLE covers ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
     }
+    // 巻ではない収録物 (外伝・特別編) の呼び名。**機械が毎回書き直す列**で、
+    // completed_user や covers.pinned のような「人の判断」ではない。
+    // 足した直後は全行 null だが、次のスキャンが upsertFile で全ファイルを
+    // 通るので放っておいても埋まる
+    if (!cols('files').has('side_label')) {
+      this.raw.exec('ALTER TABLE files ADD COLUMN side_label TEXT');
+    }
     // 列を足した後に張る。SCHEMA 側に置くと、既にある DB では列より先に走って失敗する
     this.raw.exec('CREATE INDEX IF NOT EXISTS series_enriched_idx ON series(enriched_at)');
     this.raw.exec('CREATE INDEX IF NOT EXISTS bib_cover_tried_idx ON bib(cover_tried_at)');
@@ -385,16 +397,21 @@ export class Db {
         input.completed ? 1 : 0, t, input.seriesId);
 
     const rows = this.raw
-      .prepare('SELECT id, rel_path FROM files WHERE series_id = ?')
-      .all(input.seriesId) as { id: number; rel_path: string }[];
-    const upd = this.raw.prepare('UPDATE files SET rel_path = ? WHERE id = ?');
+      .prepare('SELECT id, rel_path, volume_id FROM files WHERE series_id = ?')
+      .all(input.seriesId) as { id: number; rel_path: string; volume_id: number | null }[];
+    const upd = this.raw.prepare('UPDATE files SET rel_path = ?, side_label = ? WHERE id = ?');
     for (const r of rows) {
       const rel = String(r.rel_path);
       const sep = rel.includes('\\') ? '\\' : '/';
       const head = before.folder + sep;
       // 作品フォルダの直下に無いファイル (根に平置き) は触らない
       if (!rel.startsWith(head)) continue;
-      upd.run(input.folder + sep + rel.slice(head.length), Number(r.id));
+      const next = input.folder + sep + rel.slice(head.length);
+      // **別巻の呼び名も読み直す。** フォルダ名を前置きとして剥がして読んでいるので、
+      // フォルダが変われば答えも変わる。ここを置き去りにすると次のスキャンまで
+      // 「この作品の中の何なのか」が食い違う (この口の約束は、DB に入るのは次のスキャンが
+      // 出す答えと同じであること)
+      upd.run(next, r.volume_id === null ? parseLibraryEntry(next).sideLabel : null, Number(r.id));
     }
 
     return this.getSeries(input.seriesId)!;
@@ -511,21 +528,23 @@ export class Db {
 
   upsertFile(input: {
     rootId: string; relPath: string; seriesId: number; volumeId: number | null;
-    size: number; mtime: string | null; ext: string; part: string; partNo: number | null; tags: string[];
+    size: number; mtime: string | null; ext: string; part: string; partNo: number | null;
+    sideLabel: string | null; tags: string[];
   }): void {
     const t = now();
     this.raw
       .prepare(
         `INSERT INTO files (root_id, rel_path, series_id, volume_id, size, mtime, ext, part, part_no,
-                            tags, present, first_seen_at, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                            side_label, tags, present, first_seen_at, last_seen_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
          ON CONFLICT(root_id, rel_path) DO UPDATE SET
            series_id = excluded.series_id, volume_id = excluded.volume_id,
            size = excluded.size, mtime = excluded.mtime, tags = excluded.tags,
+           side_label = excluded.side_label,
            present = 1, last_seen_at = excluded.last_seen_at`
       )
       .run(input.rootId, input.relPath, input.seriesId, input.volumeId, input.size, input.mtime,
-        input.ext, input.part, input.partNo, JSON.stringify(input.tags), t, t);
+        input.ext, input.part, input.partNo, input.sideLabel, JSON.stringify(input.tags), t, t);
   }
 
   /** 今回のスキャンで見なかったものを「消えた」に倒す。行は消さない (履歴を残すため) */

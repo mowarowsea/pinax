@@ -82,6 +82,62 @@ test('単位を伴わない巻数は、フォルダ名を剥がせた時だけ�
   assert.equal(f.series.title, '同人誌');
 });
 
+test('巻として読めなかったファイルは、フォルダ名を剥がした残りを別巻の呼び名として読む', () => {
+  const a = parseLibraryEntry('[吾峠呼世晴] 鬼滅の刃(完)\\[吾峠呼世晴] 鬼滅の刃 外伝.rar');
+  assert.equal(a.volumeFrom, null);
+  assert.equal(a.sideLabel, '外伝');
+
+  const b = parseLibraryEntry('[新川直司] 四月は君の嘘\\[新川直司] 四月は君の嘘 Coda.rar');
+  assert.equal(b.sideLabel, 'Coda');
+
+  const c = parseLibraryEntry('[緑のルーペ] 青春のアフター(完)\\[緑のルーペ] 青春のアフター IF.rar');
+  assert.equal(c.sideLabel, 'IF');
+});
+
+test('別巻の呼び名は、区切りが _ でも著者が無くても読む', () => {
+  // ファイル名の方に [著者] が付いていない。フォルダには付いている
+  const a = parseLibraryEntry(
+    '[殆ど死んでいる] 異世界おじさん\\異世界おじさん_「メガドライブ_ミニ」発売記念特別編.rar'
+  );
+  assert.equal(a.sideLabel, '「メガドライブ ミニ」発売記念特別編');
+
+  const b = parseLibraryEntry('[宮原るり] 恋愛ラボ(完)\\[宮原るり]_恋愛ラボ_～恋愛研究レポート～.rar');
+  assert.equal(b.sideLabel, '~恋愛研究レポート~');
+});
+
+test('別巻の呼び名は、空白の入れ方と大文字小文字が食い違っても読む', () => {
+  const e = parseLibraryEntry('[広江礼威] BLACK LAGOON\\[広江礼威] Black Lagoon Phantom Bullet.rar');
+  assert.equal(e.sideLabel, 'Phantom Bullet');
+});
+
+test('フォルダ名と同じ名前のファイルは、作品そのもの (呼び名は空)', () => {
+  const e = parseLibraryEntry('[尾崎かおり] 神様がうそをつく。\\[尾崎かおり] 神様がうそをつく。.zip');
+  assert.equal(e.volumeFrom, null);
+  // null (読めなかった) ではなく空文字。1 冊で完結している作品なので要確認にしない
+  assert.equal(e.sideLabel, '');
+});
+
+test('フォルダ名が前置きになっていなければ別巻にしない', () => {
+  const e = parseLibraryEntry('[BETEMIUS (バシウス)] 同人誌\\[BETEMIUS (バシウス)] 夕立の手紙.rar');
+  assert.equal(e.sideLabel, null);
+});
+
+test('残りに数字が混じるものは別巻に格上げしない', () => {
+  // c48-49 は話数の読み落とし。別巻にすると要確認が下りて、直す機会まで消える
+  const e = parseLibraryEntry(
+    '[鳥羽徹xえむだ] そうだ、売国しよう～天才王子の赤字国家再生術～\\'
+      + '[鳥羽徹×えむだ] そうだ、売国しよう ～天才王子の赤字国家再生術～c48-49.rar'
+  );
+  assert.equal(e.volumeFrom, null);
+  assert.equal(e.sideLabel, null);
+});
+
+test('巻として読めたファイルに別巻の呼び名は付かない', () => {
+  const e = parseLibraryEntry('[つくしあきひと] メイドインアビス\\[つくしあきひと] メイドインアビス 第01巻.rar');
+  assert.equal(e.volumeFrom, 1);
+  assert.equal(e.sideLabel, null);
+});
+
 test('範囲でまとまっている巻', () => {
   const e = parseLibraryEntry('[CLAMP] ×××HOLiC\\[CLAMP] ×××HOLiC 第01-03巻.zip');
   assert.equal(e.volumeFrom, 1);

@@ -162,13 +162,19 @@ test('完結の絞り込みは指定を見る (生の completed ではない)', 
 
 // ---- 棚の整合性 (巻の重複・巻数不明) --------------------------------------
 
-/** 蔵書の 1 ファイルを置く。相対パスは実物と同じ `フォルダ\ファイル名` の形にする */
-function file(seriesId: number, volumeId: number | null, name: string, part = '', partNo: number | null = null): void {
+/**
+ * 蔵書の 1 ファイルを置く。相対パスは実物と同じ `フォルダ\ファイル名` の形にする。
+ * 別巻の呼び名は実際にはスキャンが naming.ts から書くが、ここでは直に渡す
+ */
+function file(
+  seriesId: number, volumeId: number | null, name: string,
+  part = '', partNo: number | null = null, sideLabel: string | null = null
+): void {
   const folder = db.getSeries(seriesId)!.folder;
   const relPath = `${folder}${path.sep}${name}`;
   db.upsertFile({
     rootId: 'issue', relPath, seriesId, volumeId, size: 1, mtime: null,
-    ext: name.slice(name.lastIndexOf('.')), part, partNo, tags: [],
+    ext: name.slice(name.lastIndexOf('.')), part, partNo, sideLabel, tags: [],
   });
 }
 
@@ -220,6 +226,49 @@ test('巻数を読めなかったファイルは要確認に上がる', () => {
   assert.equal(is.unreadableFiles, 1);
   assert.equal(is.duplicateVolumes, 0);
   assert.equal(is.any, true);
+});
+
+test('別巻 (外伝) は要確認に上げない', () => {
+  // 鬼滅の刃 外伝 に巻数が無いのは正しい。ここを要確認にすると 19 作品の印が
+  // 一生下りず、要確認そのものが読み飛ばされる目印になる
+  const { row: s } = db.upsertSeries({
+    rootId: 'issue', folder: '[人] 外伝のある作品', seriesKey: seriesKeyOf('外伝のある作品'),
+    title: '外伝のある作品', author: '人', completed: false,
+  });
+  const { row: v } = db.upsertVolume({ seriesId: s.id, volumeFrom: 1, volumeTo: 1, unit: '巻', completed: false });
+  file(s.id, v.id, '[人] 外伝のある作品 第01巻.rar');
+  file(s.id, null, '[人] 外伝のある作品 外伝.rar', '', null, '外伝');
+
+  const is = issuesOf(db, s.id);
+  assert.equal(is.unreadableFiles, 0);
+  assert.equal(is.any, false);
+  // 一覧の数え方も同じであること。SQL が 2 箇所あるので両方を踏む
+  const listed = listSeries(db, { rootId: 'issue', limit: 200 }).items.find((i) => i.id === s.id)!;
+  assert.equal(listed.looseFiles, 0);
+  assert.equal(listed.issues.any, false);
+});
+
+test('別巻は呼び名でまとめて出す。分割書庫があっても 1 行', () => {
+  const { row: s } = db.upsertSeries({
+    rootId: 'issue', folder: '[人] 別巻の多い作品', seriesKey: seriesKeyOf('別巻の多い作品'),
+    title: '別巻の多い作品', author: '人', completed: false,
+  });
+  const { row: v } = db.upsertVolume({ seriesId: s.id, volumeFrom: 1, volumeTo: 1, unit: '巻', completed: false });
+  file(s.id, v.id, '[人] 別巻の多い作品 第01巻.rar');
+  file(s.id, null, '[人] 別巻の多い作品 外伝.part1.rar', '.part1', 1, '外伝');
+  file(s.id, null, '[人] 別巻の多い作品 外伝.part2.rar', '.part2', 2, '外伝');
+  file(s.id, null, '[人] 別巻の多い作品.rar', '', null, '');
+  file(s.id, null, 'なにもわからない.rar');
+
+  const d = getSeriesDetail(db, s.id)!;
+  // 作品そのもの (呼び名が空) が先頭、その後に呼び名つき
+  assert.deepEqual(d.side.map((x) => x.label), ['', '外伝']);
+  assert.equal(d.side[1].files.length, 2);
+  // 欠番には効かせない。第01巻しか持っていないまま
+  assert.deepEqual(d.holdings[0].owned, [1]);
+  // 読めなかったものだけが loose に残る
+  assert.equal(d.loose.length, 1);
+  assert.ok(d.loose[0].relPath.endsWith('なにもわからない.rar'));
 });
 
 test('要確認の絞り込みは総数にも効く', () => {

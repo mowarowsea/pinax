@@ -49,9 +49,11 @@ export interface RenamePlan {
   noop: boolean;
   /**
    * 付け替えると巻数を読めなくなるファイルの数。
-   * **0 でない時は人に確かめる** (下記 countLosingVolume)
+   * **0 でない時は人に確かめる** (下記 countLosing)
    */
   losesVolume: number;
+  /** 付け替えると別巻の呼び名を読めなくなるファイルの数 (同上) */
+  losesSide: number;
   /**
    * 人に見せる注意書き。空なら黙って進めてよい。
    * **立っている計画は確かめてからでないと通さない** (server.ts が 409 を返す)
@@ -62,33 +64,41 @@ export interface RenamePlan {
 export class RenameError extends Error {}
 
 /**
- * 付け替えた後のフォルダ名で、巻数を読めなくなるファイルを数える。
+ * 付け替えた後のフォルダ名で、読めなくなるファイルを数える。
  *
- * **単位を伴わない巻数** (`[井上堅二×吉岡公威] ぐらんぶる 01.rar`) は、
- * フォルダ名を前置きとして剥がせた時だけ巻数として読んでいる (naming.ts の
- * `bareVolumeAfterFolder`)。つまりフォルダ名を変えると前置きが外れ、
- * **持っている巻が「巻数を読めなかったファイル」へ落ちる** — 欠番の計算から抜け、
- * 所持の問い合わせにも「持っていない」と答えるようになる。
+ * **どちらもフォルダ名を前置きとして剥がして読んでいる**ので、フォルダを変えると
+ * 前置きが外れて読めなくなる:
  *
- * 機械には直しようがないので、数えて人に見せる。
+ *   volume … 単位を伴わない巻数 (`… ぐらんぶる 01.rar`。naming.ts の `bareVolumeAfterFolder`)。
+ *            持っている巻が「巻数を読めなかったファイル」へ落ち、欠番の計算から抜け、
+ *            所持の問い合わせにも「持っていない」と答えるようになる
+ *   side  … 別巻の呼び名 (`… 鬼滅の刃 外伝.rar`。同 `sideLabelAfterFolder`)。
+ *            要確認へ落ちる。害は巻より小さいが、黙って落とす筋合いも無い
+ *
+ * 機械には直しようがない (直すならファイル名の側)。数えて人に見せる。
  */
-function countLosingVolume(db: Db, seriesId: number, from: string, to: string): number {
+function countLosing(db: Db, seriesId: number, from: string, to: string): { volume: number; side: number } {
   const rows = db.raw
-    .prepare('SELECT rel_path, volume_id FROM files WHERE series_id = ? AND present = 1')
-    .all(seriesId) as { rel_path: string; volume_id: number | null }[];
+    .prepare('SELECT rel_path, volume_id, side_label FROM files WHERE series_id = ? AND present = 1')
+    .all(seriesId) as { rel_path: string; volume_id: number | null; side_label: string | null }[];
 
-  let n = 0;
+  let volume = 0;
+  let side = 0;
   for (const r of rows) {
-    // 今この行が巻に結び付いていないなら、これ以上失うものは無い
-    if (r.volume_id === null) continue;
+    // 今この行が何とも結び付いていないなら、これ以上失うものは無い
+    if (r.volume_id === null && r.side_label === null) continue;
     const rel = String(r.rel_path);
     const sep = rel.includes('\\') ? '\\' : '/';
     const head = from + sep;
     if (!rel.startsWith(head)) continue;
     const after = parseLibraryEntry(to + sep + rel.slice(head.length));
-    if (after.volumeFrom === null) n++;
+    if (r.volume_id !== null) {
+      if (after.volumeFrom === null) volume++;
+    } else if (after.sideLabel === null) {
+      side++;
+    }
   }
-  return n;
+  return { volume, side };
 }
 
 /**
@@ -139,13 +149,21 @@ export function planRename(
     db.raw.prepare('SELECT COUNT(*) AS n FROM files WHERE series_id = ?').get(seriesId) as { n: number }
   ).n;
 
-  const losesVolume = noop ? 0 : countLosingVolume(db, seriesId, s.folder, to);
+  const losing = noop ? { volume: 0, side: 0 } : countLosing(db, seriesId, s.folder, to);
+  const losesVolume = losing.volume;
+  const losesSide = losing.side;
   const warnings: string[] = [];
   if (losesVolume) {
     warnings.push(
       `${losesVolume} 個のファイルが巻数を読めなくなります。` +
         'フォルダ名を前置きにして巻数を読んでいるファイル (「… 01.rar」) です。' +
         '欠番の計算と所持の判定から外れるので、ファイル名の側も直してください'
+    );
+  }
+  if (losesSide) {
+    warnings.push(
+      `${losesSide} 個の別巻が呼び名を読めなくなります (「… 外伝.rar」)。` +
+        '要確認に落ちるだけで巻には影響しませんが、ファイル名の側も直すと消えます'
     );
   }
 
@@ -157,7 +175,7 @@ export function planRename(
   return {
     seriesId, rootId: root.id, from: s.folder, to,
     title: back.title, author: back.author ?? null, completed: input.completed,
-    files: Number(files), noop, losesVolume, warnings,
+    files: Number(files), noop, losesVolume, losesSide, warnings,
   };
 }
 
