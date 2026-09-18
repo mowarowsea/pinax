@@ -243,8 +243,6 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .filelist { display: grid; gap: 8px; font-size: 12px; }
 .filelist .grp { display: grid; gap: 3px; }
 .filelist .grp > b { font-size: 12px; color: var(--gap); font-weight: 600; }
-/* 別巻 (外伝・特別編) は要確認ではない。重複と同じ色の見出しを付けると警告に見える */
-.filelist.side .grp > b { color: var(--brand); }
 .filelist .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; color: var(--ink-2); }
 .filelist .row .nm { word-break: break-all; flex: 1 1 240px; }
 .filelist .row .sz { color: var(--ink-3); font-size: 11px; }
@@ -503,13 +501,30 @@ async function loadGrid() {
 
 // ---- 詳細 ---------------------------------------------------------------
 
-function volHtml(v) {
-  const f = v.files[0];
-  const size = v.files.reduce((n, x) => n + x.size, 0);
-  const tags = v.files.flatMap((x) => x.tags);
-  const dl = v.files.length === 1
+/**
+ * 持っている 1 点分の板。**巻も別巻も同じ形にする。**
+ * どちらも「持っている本」で、数直線に乗るかどうかしか違わない。
+ * 片方をファイルの一覧で出すと、外伝だけ格下の置き場にあるように見える。
+ *
+ * 表紙の所だけ呼ぶ側から渡す — 巻は押して選び直せるが、別巻は押せない (下記)
+ */
+function volCardHtml(cover, label, files, cls = '') {
+  const f = files[0];
+  const size = files.reduce((n, x) => n + x.size, 0);
+  const tags = files.flatMap((x) => x.tags);
+  // 分割書庫は 1 枚に畳んである。押せる口は先頭だけなので、何本あるかを添える
+  const dl = files.length === 1
     ? `<a class="dl" href="/api/files/${f.id}/download">保存</a>`
-    : `<a class="dl" href="/api/files/${f.id}/download">保存 (1/${v.files.length})</a>`;
+    : `<a class="dl" href="/api/files/${f.id}/download">保存 (1/${files.length})</a>`;
+  return `<div class="vol${cls}">
+    ${cover}
+    <span class="lbl">${esc(label)}${tags.length ? ' ' + esc(tags.join(',')) : ''}</span>
+    <span class="sz">${mb(size)}</span>
+    ${dl}
+  </div>`;
+}
+
+function volHtml(v) {
   const marks = [];
   if (v.duplicate) marks.push('<span class="badge warn">複</span>');
   if (v.coverPinned) marks.push('<span class="badge pinned">選</span>');
@@ -521,12 +536,23 @@ function volHtml(v) {
   const cover = single
     ? `<button class="cover" data-cover-vol="${v.volumeFrom}" title="この巻の表紙を選び直す">${inner}</button>`
     : `<span class="cover">${inner}</span>`;
-  return `<div class="vol${v.duplicate ? ' dup' : ''}">
-    ${cover}
-    <span class="lbl">${esc(v.label)}${tags.length ? ' ' + esc(tags.join(',')) : ''}</span>
-    <span class="sz">${mb(size)}</span>
-    ${dl}
-  </div>`;
+  return volCardHtml(cover, v.label, v.files, v.duplicate ? ' dup' : '');
+}
+
+/**
+ * 別巻 1 点の板。呼び名が空のものは作品そのものなので「本編」と書く。
+ *
+ * **表紙は出ない。** 書影は巻数で引いていて (covers.volume_no)、別巻には番号が無い。
+ * 押しても選び直す先が無いので、巻と違って button にはしない —
+ * 押せる見た目で何も起きないのがいちばん悪い。
+ *
+ * 絵の代わりの文字も入れない。巻の板は表紙が無い時に巻数を書くが、あれは
+ * 滅多に出ない状態で、別巻は**必ず絵が無い**。呼び名はすぐ下に出ているので、
+ * 入れると「「メガドライブ ミニ」発売記念特別編」が毎回二度書きになる
+ */
+function sideVolHtml(s) {
+  const label = s.label || '本編';
+  return volCardHtml('<span class="cover"></span>', label, s.files);
 }
 
 function missingVolHtml(n, unit, kind) {
@@ -782,14 +808,14 @@ function fileRowHtml(f) {
  * 巻ではない収録物を並べる。外伝・特別編と、1 冊で完結している作品。
  *
  * **要確認には出さない。** 巻数が付いていないのが正しいものなので、人に直す先が無い。
- * 呼び名が空のものは作品そのものなので「本編」と書く
+ *
+ * 板は巻と同じ形にしてあるが、**節は分ける。** 同じ並びに混ぜると番号の無い板が
+ * 「第 n 巻」の列に割り込んで、数えていないものを数えているように見える
  */
 function sideSectionHtml(d) {
   if (!d.side || !d.side.length) return '';
-  const grp = (s) =>
-    `<div class="grp"><b>${esc(s.label || '本編')}</b>${s.files.map(fileRowHtml).join('')}</div>`;
   return `<h3 class="sec">別巻 <span style="font-weight:400">— 巻には数えていません</span></h3>
-  <div class="filelist side">${d.side.map(grp).join('')}</div>`;
+  <div class="vols">${d.side.map(sideVolHtml).join('')}</div>`;
 }
 
 /** 同じ巻に複数のファイルがある巻を並べる。多い作品があるので頭から 12 巻だけ出す */
