@@ -506,7 +506,19 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     const title = (req.query.q ?? '').trim();
     const author = (req.query.author ?? '').trim() || null;
     if (!title && !author) throw new HttpError(400, '作品名か著者のどちらかを入れてください');
-    return searchCandidates(db, cfg, { title, author, provider, refresh: req.query.refresh === '1' });
+    const found = await searchCandidates(db, cfg, { title, author, provider, refresh: req.query.refresh === '1' });
+    // **名前は画面で組み立てない。** 使えない文字の倒し方も長い名前の詰め方も
+    // naming.ts が持っていて、画面へ写した瞬間に書く側と読む側が別々の決まりを持ち始める。
+    //
+    // 返すのは**第01巻の 1 本だけ。** フォルダ名は末尾の「 第01巻」を削れば作れるし、
+    // 第02巻から先は数字を打ち替えれば済む。全巻ぶん並べても人はどれか 1 本しか見ない。
+    return {
+      ...found,
+      groups: found.groups.map((g) => ({
+        ...g,
+        name: planVolumeName(g.authorName ?? g.author, g.title, 1, 1, { unit: '巻' }),
+      })),
+    };
   });
 
   // ---- これから付ける名前 -------------------------------------------------

@@ -68,7 +68,7 @@ export interface CandidateGroup {
   /**
    * 同じ著者を**棚のフォルダ名に書く形**へ寄せたもの (tidyAuthorName)。
    * `author` が提供元の表記そのままなのに対し、こちらは `[藤田和日郎] …` と
-   * 書くための形。名前を組み立てる画面 (/api/names) の既定値になる
+   * 書くための形。この束から `name` (第01巻のファイル名) を組み立てる時に使う
    */
   authorName: string | null;
   count: number;
