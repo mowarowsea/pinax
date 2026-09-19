@@ -161,12 +161,12 @@ main { padding: 16px 20px 60px; }
   overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
   padding: 20px;
 }
-/* 表紙の右にタイトルを回り込ませない。幅があると回り込んで、画面幅で
-   タイトルの居場所が変わってしまう。表紙の右は空くが、常に同じ形の方がいい */
-.d-head { display: flex; flex-direction: column; gap: 14px; }
+/* タイトルは表紙の右。**狭い画面でも折り返して下へ落とさない** —
+   同じ作品でも端末で居場所が変わると、次に見る時に目が迷う */
+.d-head { display: flex; gap: 20px; }
 .d-cover { width: 150px; flex: none; aspect-ratio: 2/3; border-radius: 8px; overflow: hidden; background: var(--brand-soft); box-shadow: var(--shadow); }
 .d-cover img { width: 100%; height: 100%; object-fit: cover; }
-.d-info { min-width: 0; }
+.d-info { flex: 1 1 0; min-width: 0; }
 .d-info h2 { margin: 0 0 4px; font-size: 20px; line-height: 1.35; }
 .d-author { color: var(--brand); font-size: 13px; font-weight: 600; margin-bottom: 10px; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12.5px; color: var(--ink-2); }
