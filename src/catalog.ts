@@ -208,6 +208,23 @@ interface CountRow {
   loose: number;
 }
 
+/**
+ * 棚に出す表紙の URL。**焼いた絵の名前を後ろに付ける。**
+ *
+ * covers の行は表紙を差し替えても id が変わらない (writeCover が 1 行を書き換える) ので、
+ * `/api/covers/<id>` だけでは選び直しても URL が同じまま。あの道は「焼いた絵は中身が
+ * 変わらない」前提で 1 年の immutable を返す (server.ts) ため、ブラウザは二度と取りに
+ * 来ず、**選び直したのに古い絵が出続ける** — 「選」の印だけが立って表紙は小説版のまま、
+ * という見え方になる (マージナル・オペレーションの第01-02巻、2026-09-19)。
+ *
+ * 焼いた絵の名前は中身のハッシュなので、絵が変われば名前も変わる。URL に混ぜておけば
+ * 差し替えた時だけ URL が変わり、変わらない間は今まで通り 1 年効く。
+ */
+function coverUrlOf(id: number, file: unknown): string {
+  const v = String(file ?? '').replace(/\.[^.]*$/, '').slice(0, 12);
+  return v ? `/api/covers/${id}?v=${v}` : `/api/covers/${id}`;
+}
+
 export function listSeries(db: Db, opts: ListOptions = {}): { total: number; items: SeriesSummary[] } {
   const where: string[] = ['s.present = 1'];
   const params: (string | number)[] = [];
@@ -263,6 +280,7 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
               ${dupVolumesSql('s.id')} AS dup_volumes,
               ${dupFilesSql('s.id')} AS dup_files,
               (SELECT c.id FROM covers c WHERE c.series_id = s.id AND c.volume_no IS NULL) AS cover_id,
+              (SELECT c.file FROM covers c WHERE c.series_id = s.id AND c.volume_no IS NULL) AS cover_file,
               COALESCE(${volumeAddedAtSql('s.id')}, s.first_seen_at) AS volume_added_at
          FROM series s ${clause}
         ORDER BY ${order} LIMIT ? OFFSET ?`
@@ -294,7 +312,7 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
       hasGap: holdings.some((h) => h.missing.length > 0),
       shelf: shelfStateOf(pub, done.completedBy, holdings),
       issues: toIssues(Number(r.dup_volumes ?? 0), Number(r.dup_files ?? 0), Number(r.loose ?? 0)),
-      coverUrl: r.cover_id ? `/api/covers/${Number(r.cover_id)}` : null,
+      coverUrl: r.cover_id ? coverUrlOf(Number(r.cover_id), r.cover_file) : null,
       firstSeenAt: String(r.first_seen_at),
       lastSeenAt: String(r.last_seen_at),
       volumeAddedAt: String(r.volume_added_at ?? r.first_seen_at),
@@ -397,8 +415,8 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
   });
 
   const covers = db.raw
-    .prepare('SELECT id, volume_no, pinned FROM covers WHERE series_id = ?')
-    .all(id) as { id: number; volume_no: number | null; pinned: number }[];
+    .prepare('SELECT id, volume_no, pinned, file FROM covers WHERE series_id = ?')
+    .all(id) as { id: number; volume_no: number | null; pinned: number; file: string }[];
   const coverByVol = new Map(
     covers.filter((c) => c.volume_no !== null).map((c) => [Number(c.volume_no), c])
   );
@@ -413,11 +431,13 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
    * ただし「選」の印は合本には立てない。あれは**この巻の表紙を選び直した**印で、
    * 選び直せるのは単巻だけ (下の single)。合本に出すと外し方の無い印になる。
    */
-  const coverFor = (v: { volumeFrom: number; volumeTo: number }): { id: number; pinned: number } | undefined => {
+  const coverFor = (
+    v: { volumeFrom: number; volumeTo: number }
+  ): { id: number; pinned: number; file: string } | undefined => {
     if (v.volumeFrom === v.volumeTo) return coverByVol.get(v.volumeFrom);
     for (let i = v.volumeFrom; i <= v.volumeTo; i++) {
       const c = coverByVol.get(i);
-      if (c) return { id: c.id, pinned: 0 };
+      if (c) return { ...c, pinned: 0 };
     }
     return undefined;
   };
@@ -429,7 +449,6 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
    */
   const details: VolumeDetail[] = volumes.filter((v) => v.present).map((v) => {
     const cover = coverFor(v);
-    const coverId = cover?.id;
     const mine = fileRows.filter((r) => Number(r.volume_id) === v.id);
     return {
       id: v.id,
@@ -441,7 +460,7 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
         : `第${String(v.volumeFrom).padStart(2, '0')}-${String(v.volumeTo).padStart(2, '0')}${v.unit}`,
       completed: v.completed,
       present: v.present,
-      coverUrl: coverId ? `/api/covers/${coverId}` : null,
+      coverUrl: cover ? coverUrlOf(cover.id, cover.file) : null,
       coverPinned: Number(cover?.pinned ?? 0) === 1,
       duplicate: new Set(mine.map(fileBaseOf)).size > 1,
       files: mine.map(toFile),
@@ -486,8 +505,8 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
     )
     .get(s.id) as unknown as CountRow;
   const cover = db.raw
-    .prepare('SELECT id FROM covers WHERE series_id = ? AND volume_no IS NULL')
-    .get(s.id) as { id: number } | undefined;
+    .prepare('SELECT id, file FROM covers WHERE series_id = ? AND volume_no IS NULL')
+    .get(s.id) as { id: number; file: string } | undefined;
   const added = db.raw
     .prepare(`SELECT ${volumeAddedAtSql('?')} AS at`)
     .get(s.id) as { at: string | null };
@@ -512,7 +531,7 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
     hasGap: holdings.some((h) => h.missing.length > 0),
     shelf: shelfStateOf(pub, s.completedBy, holdings),
     issues: issuesOf(db, s.id),
-    coverUrl: cover ? `/api/covers/${cover.id}` : null,
+    coverUrl: cover ? coverUrlOf(cover.id, cover.file) : null,
     firstSeenAt: s.firstSeenAt,
     lastSeenAt: s.lastSeenAt,
     volumeAddedAt: added.at ?? s.firstSeenAt,

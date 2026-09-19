@@ -349,7 +349,26 @@ test('合本の板には、覆う巻のうち一番若い巻の表紙を出す',
   const first = db.raw.prepare('SELECT id FROM covers WHERE series_id = ? AND volume_no = 1').get(id) as { id: number };
   const d2 = getSeriesDetail(db, id)!;
   const bundle2 = d2.volumes.find((v) => v.volumeFrom === 1 && v.volumeTo === 6)!;
-  assert.equal(bundle2.coverUrl, `/api/covers/${first.id}`);
+  assert.equal(bundle2.coverUrl, `/api/covers/${first.id}?v=v1`);
+});
+
+test('表紙を差し替えたら URL も変わる', () => {
+  // covers の行は差し替えても id が変わらない。URL が `/api/covers/<id>` だけだと
+  // 1 年の immutable が効いたままで、**選び直したのに古い絵が出続ける** (2026-09-19)。
+  // 焼いた絵の名前 (中身のハッシュ) を後ろに付けて、絵が変わった時だけ URL を変える
+  const id = seed('[芝村裕吏×キムラダイスケ] マージナル・オペレーション', 'マージナル・オペレーション', '芝村裕吏×キムラダイスケ', [[1, 1, '巻']]);
+  db.raw.prepare(
+    `INSERT INTO covers (series_id, volume_no, provider, file, bytes, created_at)
+     VALUES (?, 1, 'ndl', 'aaaaaaaaaaaaaaaa.jpg', 1, '2026-01-01')`
+  ).run(id);
+  const before = getSeriesDetail(db, id)!.volumes[0].coverUrl;
+
+  // 人が選び直した時と同じ形。行はそのままで焼いた絵だけが入れ替わる
+  db.raw.prepare("UPDATE covers SET file = 'bbbbbbbbbbbbbbbb.jpg', pinned = 1 WHERE series_id = ? AND volume_no = 1").run(id);
+  const after = getSeriesDetail(db, id)!.volumes[0].coverUrl;
+
+  assert.notEqual(after, before, '絵が変わったら URL も変わる');
+  assert.equal(after, before!.split('?')[0] + '?v=bbbbbbbbbbbb');
 });
 
 test('棚から抜いたファイルは詳細に残らない', () => {

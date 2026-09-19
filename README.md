@@ -649,7 +649,9 @@ DELETE /api/series/:id/cover-pick       選択を外して自動へ戻す (表�
 POST   /api/series/:id/cover            表紙を 1 枚だけ人の指定で差し替える
                                         ({ volume, provider, imageUrl, isbn })。volume: null は代表表紙
 GET    /api/bib/thumb?u=                候補の下見の画像を中継する (許した書影の置き場だけ)
-GET    /api/covers/:id                  焼いた表紙
+GET    /api/covers/:id?v=               焼いた表紙。v は焼いた絵の名前 (中身のハッシュ) で、
+                                        差し替えた時だけ変わる。1 年の immutable を返すので
+                                        これが無いと選び直した絵がブラウザに届かない
 GET    /api/files/:id/download          実ファイルを落とす
 GET    /api/files/:id/pages?refresh=1   書庫の中のページ一覧 (絵は返さない。索引だけ)
 GET    /api/files/:id/page/:i           ページ 1 枚。i は索引の並びの番号
