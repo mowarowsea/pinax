@@ -781,24 +781,6 @@ function detailHtml(d) {
     <div class="d-info">
       <h2>${esc(d.title)}${d.completed ? ' <span class="badge done">完結</span>' : ''}</h2>
       <div class="d-author">${esc(d.author ?? '著者不明')}</div>
-      <dl class="kv">
-        <dt>所持</dt><dd>${d.fileCount} 冊 · ${mb(d.bytes)}${d.looseFiles ? ` (巻数不明 ${d.looseFiles} 点)` : ''}</dd>
-        ${bib.publisher ? `<dt>出版</dt><dd>${esc(bib.publisher)}${bib.pubdate ? ` (${esc(bib.pubdate)})` : ''}</dd>` : ''}
-        ${bib.isbn ? `<dt>ISBN</dt><dd>${esc(bib.isbn)}</dd>` : ''}
-        <dt>フォルダ</dt><dd>${esc(d.folder)}</dd>
-      </dl>
-      ${gapText ? `<div class="gapline">欠番 ${esc(gapText)}</div>` : ''}
-      ${shelfLineHtml(d)}
-      ${issueLineHtml(d)}
-      ${completedSwitchHtml(d)}
-      ${pickLineHtml(d)}
-      <div class="d-actions">
-        <button class="btn" id="enrich" data-id="${d.id}">書誌と表紙を取り直す</button>
-        <button class="btn" id="pick-open">表紙を探して選ぶ</button>
-        <button class="btn" id="rn-open">名前を直す</button>
-        ${caps.reveal.available ? '<button class="btn pc-only" id="reveal">エクスプローラで開く</button>' : ''}
-      </div>
-      ${renameBoxHtml(d)}
     </div>
   </div>
   ${d.volumes.length ? `<h3 class="sec">巻 <span style="font-weight:400">— 表紙を押すと読み始めます</span></h3>
@@ -807,6 +789,27 @@ function detailHtml(d) {
   ${dupSectionHtml(d)}
   ${d.loose.length ? `<h3 class="sec">巻数も呼び名も読めなかったファイル</h3>
     <div class="filelist">${d.loose.map((f) => fileRowHtml(f)).join('')}</div>` : ''}
+  <h3 class="sec">この作品について</h3>
+  <div class="d-about">
+    <dl class="kv">
+      <dt>所持</dt><dd>${d.fileCount} 冊 · ${mb(d.bytes)}${d.looseFiles ? ` (巻数不明 ${d.looseFiles} 点)` : ''}</dd>
+      ${bib.publisher ? `<dt>出版</dt><dd>${esc(bib.publisher)}${bib.pubdate ? ` (${esc(bib.pubdate)})` : ''}</dd>` : ''}
+      ${bib.isbn ? `<dt>ISBN</dt><dd>${esc(bib.isbn)}</dd>` : ''}
+      <dt>フォルダ</dt><dd>${esc(d.folder)}</dd>
+    </dl>
+    ${gapText ? `<div class="gapline">欠番 ${esc(gapText)}</div>` : ''}
+    ${shelfLineHtml(d)}
+    ${issueLineHtml(d)}
+    ${completedSwitchHtml(d)}
+    ${pickLineHtml(d)}
+    <div class="d-actions">
+      <button class="btn" id="enrich" data-id="${d.id}">書誌と表紙を取り直す</button>
+      <button class="btn" id="pick-open">表紙を探して選ぶ</button>
+      <button class="btn" id="rn-open">名前を直す</button>
+      ${caps.reveal.available ? '<button class="btn pc-only" id="reveal">エクスプローラで開く</button>' : ''}
+    </div>
+    ${renameBoxHtml(d)}
+  </div>
   `;
 }
 
