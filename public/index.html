@@ -264,6 +264,15 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .rnplan .rnfrom { color: var(--ink-3); text-decoration: line-through; word-break: break-all; }
 .rnplan small { display: block; color: var(--ink-3); font-size: 11.5px; margin-top: 4px; }
 .rnwarn { color: var(--gap); font-weight: 600; margin-top: 5px; }
+.rnsame { font-weight: 400; color: var(--ink-3); }
+/* 出どころの添え書き。欄が棚の名前で埋まっていない理由をその場で言う */
+.rnfrom-pick { font-size: 11.5px; color: var(--ink-3); margin-top: -4px; }
+/* 追従できないファイルは名前で出す。人が手で直す先なので等幅で */
+.rnstuck { margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--line);
+  font-size: 11.5px; color: var(--ink-3); }
+.rnstuck ul { margin: 4px 0 0; padding-left: 18px; }
+.rnstuck li { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-all; line-height: 1.5; }
 .rnacts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .rnacts .go { border-color: var(--brand); color: var(--brand); font-weight: 700; }
 .rnnote { font-size: 11.5px; color: var(--ink-3); }
@@ -889,13 +898,26 @@ function completedSwitchHtml(d) {
  * 状態を detailHtml の外に置いているのは、詳細の中身を貼り直しても
  * 打ちかけの名前が消えないようにするため (表紙を選ぶ画面と同じ作り)。
  */
-const renamer = { seriesId: null, open: false, title: '', author: '', completed: false, plan: null };
+const renamer = {
+  seriesId: null, open: false, title: '', author: '', completed: false, plan: null, fromPick: false,
+};
 
+/**
+ * **表紙で選んだシリーズがあれば、そちらを既定値にする。**
+ *
+ * 名前を直しに来る作品は、棚のフォルダ名が間違っているから来る。正しい書名と著者は
+ * たいてい「表紙を探して選ぶ」で人が既に当てていて、画面にも出ている。そこで棚の
+ * 名前を出し直すと、**当てた答えを見ながらもう一度打ち写す**ことになる。
+ *
+ * 著者は、選択を付けた時期によっては控えていない (series_pick.author は後から
+ * 足した列)。その時だけ棚の値に落ちる。
+ */
 function renameOpen(d) {
   renamer.seriesId = d.id;
   renamer.open = true;
-  renamer.title = d.title;
-  renamer.author = d.author ?? '';
+  renamer.title = d.pick ? d.pick.title : d.title;
+  renamer.author = (d.pick && d.pick.author) || d.author || '';
+  renamer.fromPick = Boolean(d.pick);
   renamer.completed = d.completed;
   renamer.plan = null;
 }
@@ -913,6 +935,35 @@ function renameCollect() {
   if (c) renamer.completed = c.checked;
 }
 
+/**
+ * 計画の中身。**出すのは「どうなるか」だけ。**
+ *
+ * ファイル 1 本ずつの新旧は並べない — 付け替え方は全部同じなので、4 点でも 200 点でも
+ * 同じ形が縦に伸びるだけで、読むところが無い。代わりに**追従できないファイルは
+ * 名前で出す**。あれは人が手で直しに行く先で、名前が分からないと直せない。
+ */
+function renamePlanHtml(p) {
+  if (p.noop) {
+    return `<div class="rnplan"><div class="rnfrom">${esc(p.from)}</div>
+      <div class="rnto">名前は変わりません</div></div>`;
+  }
+  // フォルダ名は合っていてファイル名だけ直す付け替えもある (外で直した後がこの形)
+  const head = p.from === p.to
+    ? `<div class="rnto">${esc(p.to)} <span class="rnsame">— フォルダ名はこのまま</span></div>`
+    : `<div class="rnfrom">${esc(p.from)}</div><div class="rnto">→ ${esc(p.to)}</div>`;
+  return `<div class="rnplan">
+    ${head}
+    ${p.warnings.map((w) => `<div class="rnwarn">${esc(w)}</div>`).join('')}
+    ${p.moves.length
+      ? `<small>このフォルダ以下 ${p.moves.length} 件のファイル名も追従させます</small>`
+      : '<small>ファイル名は既に揃っています</small>'}
+    ${p.stuck.length ? `<div class="rnstuck">
+      このフォルダ以下の、作品名が前置きになっていない下記ファイルは追従できません
+      <ul>${p.stuck.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
+    </div>` : ''}
+  </div>`;
+}
+
 function renameBoxHtml(d) {
   if (!renamer.open || renamer.seriesId !== d.id) return '';
   const p = renamer.plan;
@@ -926,17 +977,15 @@ function renameBoxHtml(d) {
       <label class="fld">著者
         <input type="text" id="rn-author" value="${esc(renamer.author)}" placeholder="著者 (空でも可)"></label>
     </div>
+    ${renamer.fromPick
+      ? `<div class="rnfrom-pick">選んだシリーズから写しました — 棚の名前は「${esc(d.folder)}」です</div>`
+      : ''}
     <label class="switch">
       <input type="checkbox" id="rn-completed"${renamer.completed ? ' checked' : ''}>
       <span class="track"></span>
       <span>完結済み — フォルダ名に (完) を書く</span>
     </label>
-    ${p ? `<div class="rnplan">
-      <div class="rnfrom">${esc(p.from)}</div>
-      <div class="rnto">${p.noop ? '名前は変わりません' : '→ ' + esc(p.to)}</div>
-      ${p.warnings.map((w) => `<div class="rnwarn">${esc(w)}</div>`).join('')}
-      ${p.noop ? '' : `<small>ファイル ${p.files} 点の置き場所が変わります。ファイル名そのものは変えません</small>`}
-    </div>` : ''}
+    ${p ? renamePlanHtml(p) : ''}
     <div class="rnacts">
       <button class="btn" id="rn-plan">${p ? 'もう一度見る' : 'どう変わるか見る'}</button>
       ${canGo ? '<button class="btn go" id="rn-go">この名前に付け替える</button>' : ''}
@@ -1119,7 +1168,8 @@ function wireDetail(d) {
           apply: true, confirm: true,
         }),
       });
-      toast(`「${r.result.to}」に付け替えました`, 5000);
+      const missed = r.result.missing ? ` / 棚に無かった ${r.result.missing} 点は飛ばしました` : '';
+      toast(`「${r.result.to}」に付け替えました — ファイル ${r.result.renamed} 件${missed}`, 5000);
       renameClose();
       await openDetail(id, 'keep');
       await loadGrid();
@@ -1364,6 +1414,9 @@ async function choosePickedGroup(btn) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         scope: picker.provider, groupKey: key, title: g.title,
+        // 棚のフォルダ名に書く形へ寄せた方を送る。提供元の表記そのまま
+        // (NDL の「内藤, 泰弘」) は名前を直す欄の既定値にできない
+        author: g.authorName || g.author || '',
         queryTitle: picker.q, queryAuthor: picker.author,
       }),
     });

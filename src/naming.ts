@@ -36,6 +36,11 @@ const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 /** 1 つのフォルダ名 / ファイル名の上限。NTFS は 255 だが、パス全体の余裕を残す */
 const SEGMENT_MAX = 110;
 /**
+ * 巻数の後ろに残す印の上限。`[LQ]` や `w` のような短い印しか来ない場所で、
+ * ここが伸びると作品名を削る側にしわ寄せが行く
+ */
+const TAIL_MAX = 24;
+/**
  * フルパスの上限。Windows の MAX_PATH は 260 だが、分割書庫の連番や
  * 同名回避の ` (2)` が後から伸びるぶんを引いてある。
  */
@@ -111,6 +116,14 @@ export interface ParsedName {
   completed: boolean;
   /** 巻数の後ろに付いていた版・品質の印 ([LQ] など) */
   tags: string[];
+  /**
+   * 巻数表現より後ろに書かれていたものを**そのまま**。`第04巻 [LQ]` なら ` [LQ]`。
+   *
+   * `tags` は [...] で囲まれた印しか拾えない。手元には `第09巻w` のように囲みの無い
+   * 1 文字の印が実在するので、**名前を組み立て直す側 (rename.ts) はこちらを写す** —
+   * tags から組み直すと囲みの無い印が黙って消え、同じ巻の別版が 1 本に潰れる。
+   */
+  tail: string;
   part: string;
   partNo: number | null;
   ext: string;
@@ -153,6 +166,7 @@ export function parseFilename(name: string): ParsedName {
     unit: match?.unit ?? '巻',
     completed,
     tags,
+    tail,
     part,
     partNo,
     ext,
@@ -228,6 +242,25 @@ function foldForPrefix(s: string): string {
  * 巻かもしれないと見て、読めないまま人に見せる方を採る。
  */
 function sideLabelAfterFolder(fileTitle: string, folderTitle: string): string | null {
+  const rest = restAfterFolderTitle(fileTitle, folderTitle);
+  if (rest === null || rest === '') return rest;
+  return /\d/.test(rest) ? null : rest;
+}
+
+/**
+ * 作品フォルダ名を前置きとして剥がし、**残りをそのまま返す**。
+ *
+ * `sideLabelAfterFolder` の素になっている部分を切り出したもの。あちらは残りを
+ * 「別巻の呼び名」として読むので数字の混じったものを落とすが、こちらは判断しない —
+ * 名前を付け替える側 (rename.ts) が**前置きだけを差し替えて残りを一字も変えない**ために使う。
+ *
+ *   ('実は妹でした。 第01巻', '実は妹でした。')  → '第01巻'
+ *   ('実は妹でした。', '実は妹でした。')          → ''      前置きそのもの
+ *   ('あなたのヤミ鎮守府 1', '同人誌')            → null    前置きになっていない
+ *
+ * **空文字と null は別物。** 空文字は「フォルダ名そのもの」、null は「剥がせなかった」。
+ */
+export function restAfterFolderTitle(fileTitle: string, folderTitle: string): string | null {
   const file = foldForPrefix(fileTitle);
   const folder = foldForPrefix(folderTitle);
   if (!file || !folder) return null;
@@ -246,9 +279,7 @@ function sideLabelAfterFolder(fileTitle: string, folderTitle: string): string | 
     if (!/\s/.test(file[i])) seen++;
     i++;
   }
-  const rest = file.slice(i).replace(/^[\s._\-–—:：]+/, '').trim();
-  if (!rest) return '';
-  return /\d/.test(rest) ? null : rest;
+  return file.slice(i).replace(/^[\s._\-–—:：]+/, '').trim();
 }
 
 /** 作品フォルダ 1 つ分の素性 */
@@ -417,14 +448,54 @@ export function planVolumeName(
   title: string,
   from: number,
   to: number,
-  opts: { unit?: VolumeUnit; completed?: boolean } = {}
+  opts: { unit?: VolumeUnit; completed?: boolean; tail?: string } = {}
 ): string | null {
   const bareTitle = stripCompletionMark(String(title ?? '')).text.trim();
   const bareAuthor = stripCompletionMark(String(author ?? '')).text.trim() || null;
   if (!bareTitle) return null;
-  const tail = ` ${formatVolume(from, to, opts.unit ?? '巻')}${opts.completed ? '(完)' : ''}`;
+  const tail = ` ${formatVolume(from, to, opts.unit ?? '巻')}${opts.completed ? '(完)' : ''}${cleanTail(opts.tail)}`;
   const label = sanitizeSegment(seriesLabel(bareAuthor, bareTitle), SEGMENT_MAX - tail.length);
   return label ? `${label}${tail}` : null;
+}
+
+/**
+ * 巻数の後ろに書かれていたもの (`ParsedName.tail`) を、名前に戻せる形に均す。
+ *
+ * **落とすのは名前に使えない文字だけ。** 版の印は `[LQ]` のような囲みとは限らず
+ * (`第09巻w`)、何が意味を持つ印なのかは機械には分からない。分からないものは残す。
+ */
+function cleanTail(raw: string | null | undefined): string {
+  const s = String(raw ?? '');
+  if (!s.trim()) return '';
+  // 区切りの空白は名前の一部。sanitizeSegment が落とすので、付いていたら自分で戻す
+  const lead = /^\s/.test(s) ? ' ' : '';
+  const body = sanitizeSegment(s, TAIL_MAX);
+  return body ? `${lead}${body}` : '';
+}
+
+/**
+ * 巻ではない収録物のファイル名を組み立てる。**拡張子は付けない。**
+ *
+ *   planSideName('吾峠呼世晴', '鬼滅の刃', '外伝')  → '[吾峠呼世晴] 鬼滅の刃 外伝'
+ *   planSideName('尾崎かおり', '神様がうそをつく。', '') → '[尾崎かおり] 神様がうそをつく。'
+ *
+ * 呼び名 (`rest`) は `restAfterFolderTitle` が剥がした残りをそのまま受ける。
+ * **前置きだけを差し替えて残りは触らない**ための口で、外伝・特別編にも、
+ * 巻として読めないまま作品フォルダに住んでいるファイルにも同じように効く。
+ */
+export function planSideName(
+  author: string | null | undefined,
+  title: string,
+  rest: string
+): string | null {
+  const bareTitle = stripCompletionMark(String(title ?? '')).text.trim();
+  const bareAuthor = stripCompletionMark(String(author ?? '')).text.trim() || null;
+  if (!bareTitle) return null;
+  const tail = rest ? ` ${rest}` : '';
+  const label = sanitizeSegment(seriesLabel(bareAuthor, bareTitle), SEGMENT_MAX - tail.length);
+  if (!label) return null;
+  // 呼び名の側も名前として通らない字を含みうる。丸ごと通し直して長さも収める
+  return sanitizeSegment(`${label}${tail}`);
 }
 
 // ---- 組み立て (PowerDowner から引き取り) -----------------------------------

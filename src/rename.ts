@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Db } from './db.js';
 import type { LibraryRoot } from './config.js';
-import { parseLibraryEntry, planFolderName, seriesLabel } from './naming.js';
+import {
+  parseFilename, parseLibraryEntry, planFolderName, planSideName, planVolumeName,
+  restAfterFolderTitle, seriesLabel, uniqueName,
+} from './naming.js';
+import type { VolumeUnit } from './volume.js';
 import { seriesKeyOf } from './volume.js';
 import { resolveInsideRoot } from './reveal.js';
 import { withShelfLock } from './lock.js';
@@ -26,11 +30,30 @@ import { withShelfLock } from './lock.js';
  * 焼いた表紙も選んだ系列も完結の指定も古い行に取り残される。
  * ここを通せば `series.id` が変わらないので全部残る (db.renameSeriesFolder)。
  *
- * **ファイル名は触らない。** 作品の素性はフォルダを正とする (naming.ts) ので、
- * フォルダさえ直ればカタログは正しくなる。ファイル名まで組み立て直すと
- * 版の印 (`[LQ]` / 末尾の `w`) と分割書庫の連番を落とす道が増えるだけで、
- * 落とした情報は戻らない。ここは別の段で、別の歯止めを付けてからやる。
+ * **ファイル名も一緒に付け替える。** 作品の素性はフォルダを正とする (naming.ts) ので
+ * カタログはフォルダだけでも正しくなるが、棚に並ぶ実物が古い作品名のまま残る。
+ * 手で直せばエクスプローラで直したのと同じ危うさに戻るので、ここで面倒を見る。
+ *
+ * 歯止めは 3 つ:
+ *
+ *   1. **名前は組み立てず、写す。** 版の印 (`[LQ]` / 末尾の `w`) は
+ *      `ParsedName.tail` を、分割書庫の連番と拡張子は `splitFilename` の結果を
+ *      そのまま戻す。組み直すのは `[著者] 作品名` と巻数表現だけ
+ *   2. **追従できないファイルには触らない。** 作品名が前置きになっていない
+ *      ファイル (`[BETEMIUS] 同人誌/[BETEMIUS] 夕立の手紙.rar`) は、何を削って
+ *      何を残せばいいのか機械には決められない。**数えて人に見せる** (RenamePlan.stuck)
+ *   3. **同じ名前を作らない。** 既にある名前と当たったら ` (2)` を付ける
+ *      (naming.ts uniqueName)。上書きは一度やると戻せない
  */
+
+/** ファイル 1 本の付け替え。持つのは**フォルダの中の名前だけ** (置き場所は from/to が決める) */
+export interface FileRename {
+  id: number;
+  /** 今のファイル名 */
+  from: string;
+  /** 付け替えた後のファイル名 */
+  to: string;
+}
 
 export interface RenamePlan {
   seriesId: number;
@@ -45,7 +68,14 @@ export interface RenamePlan {
   completed: boolean;
   /** 一緒に rel_path が付け替わるファイルの行数 */
   files: number;
-  /** 名前が変わらない。押しても何も起きない */
+  /** 名前まで付け替わるファイル。**実際に動かすのはこれで全部** */
+  moves: FileRename[];
+  /**
+   * 名前を追従させられないファイル。作品名が前置きになっていないもので、
+   * **今の名前のまま残る**。画面に並べて人に見せる (何を手で直せばいいか分かるように)
+   */
+  stuck: string[];
+  /** フォルダもファイルも名前が変わらない。押しても何も起きない */
   noop: boolean;
   /**
    * 付け替えると巻数を読めなくなるファイルの数。
@@ -63,11 +93,111 @@ export interface RenamePlan {
 
 export class RenameError extends Error {}
 
+interface FileRow {
+  id: number;
+  rel_path: string;
+  volume_id: number | null;
+  side_label: string | null;
+  volume_from: number | null;
+  volume_to: number | null;
+  unit: string | null;
+}
+
 /**
- * 付け替えた後のフォルダ名で、読めなくなるファイルを数える。
+ * フォルダの中のファイル名を、新しい作品名へ追従させる計画を立てる。
  *
- * **どちらもフォルダ名を前置きとして剥がして読んでいる**ので、フォルダを変えると
- * 前置きが外れて読めなくなる:
+ * 見分けは 3 通りで、**上から順に当てる**:
+ *
+ *   巻として読めている … 棚の形へ組み立て直す (`[著者] 作品名 第01巻`)。
+ *     巻数は **DB の値**を使う。ファイル名から読み直すと、フォルダ名を前置きにして
+ *     読んでいた巻 (`… ぐらんぶる 01.rar`) が読めず、持っている巻を落としてしまう。
+ *     頭にゴミの付いた名前 (`(一般コミック) [作者] …`) もここで決まり通りになる
+ *   別巻・単巻       … 前置きだけ差し替える。呼び名 (`外伝`) は一字も変えない
+ *   それ以外         … **触らない。** 作品名が前置きになっていないファイル
+ *     (`[BETEMIUS] 同人誌/[BETEMIUS] 夕立の手紙.rar`) は、どこまでが作品名で
+ *     どこからが残りなのかを機械が決められない。名付け直せば別作品のものを取り込む
+ */
+function planFileRenames(
+  db: Db,
+  seriesId: number,
+  from: string,
+  to: { author: string | null; title: string; completed: boolean }
+): { moves: FileRename[]; stuck: string[] } {
+  const rows = db.raw
+    .prepare(
+      `SELECT f.id, f.rel_path, f.volume_id, f.side_label, v.volume_from, v.volume_to, v.unit
+         FROM files f LEFT JOIN volumes v ON v.id = f.volume_id
+        WHERE f.series_id = ? AND f.present = 1
+        ORDER BY f.rel_path`
+    )
+    .all(seriesId) as unknown as FileRow[];
+
+  // 前置きとして剥がすのは**作品名だけ**。著者と (完) は parseFilename が落とす
+  const folderTitle = parseFilename(from).title;
+
+  const wants: { id: number; from: string; to: string | null }[] = [];
+  for (const r of rows) {
+    const rel = String(r.rel_path);
+    const sep = rel.includes('\\') ? '\\' : '/';
+    const head = from + sep;
+    if (!rel.startsWith(head)) continue;
+    const base = rel.slice(head.length);
+    // 作品フォルダの直下だけを見る。下に掘られた階層は作品の形が違う
+    if (base.includes('\\') || base.includes('/')) continue;
+
+    const p = parseFilename(base);
+    let want: string | null = null;
+    if (r.volume_from !== null) {
+      want = planVolumeName(to.author, to.title, Number(r.volume_from), Number(r.volume_to), {
+        unit: (r.unit as VolumeUnit) ?? '巻',
+        /**
+         * 最終巻の印は**元から付いていたものだけ**残す。付いていない巻に足しはしない
+         * (どれが最終巻かは人しか知らない) が、作品を継続中へ戻す時は落とす —
+         * 残すと次のスキャンが「ファイルに印がある」と読んで完結へ戻してしまい、
+         * 画面で外したはずの指定が黙って復活する (naming.ts parseLibraryEntry)
+         */
+        completed: to.completed && p.completed,
+        // 版の印 (`[LQ]` / 末尾の `w`) はここでそのまま戻る
+        tail: p.tail,
+      });
+    } else {
+      // 呼び名は DB にあればそれを使う。無いものは前置きを剥がした残りをそのまま回す
+      const rest = r.side_label !== null
+        ? String(r.side_label)
+        : restAfterFolderTitle(p.title, folderTitle);
+      if (rest !== null) want = planSideName(to.author, to.title, rest);
+    }
+    // 分割書庫の連番と拡張子は読み戻したものをそのまま戻す。組み立て直さない
+    wants.push({ id: Number(r.id), from: base, to: want === null ? null : want + p.part + p.ext });
+  }
+
+  /**
+   * **今そこにある名前は全部埋まっているものとして避ける** (自分の名前だけは例外)。
+   *
+   * 避けないと「A を B の名前へ、B を C の名前へ」と回った時に、A が B を
+   * 上書きして 1 本消える。当たった時は ` (2)` を付ける — 同じ巻が 2 本あることは
+   * 棚の「要確認」に出るので、どちらを捨てるかは中身を見た人が決められる。
+   */
+  const taken = new Set(wants.map((w) => w.from));
+  const moves: FileRename[] = [];
+  const stuck: string[] = [];
+  for (const w of wants) {
+    if (w.to === null) {
+      stuck.push(w.from);
+      continue;
+    }
+    const name = uniqueName('', w.to, (x) => x !== w.from && taken.has(x));
+    taken.add(name);
+    if (name !== w.from) moves.push({ id: w.id, from: w.from, to: name });
+  }
+  return { moves, stuck };
+}
+
+/**
+ * 付け替えた後の名前で、読めなくなるファイルを数える。
+ *
+ * **巻も呼び名もフォルダ名を前置きとして剥がして読んでいる**ので、名前を変えると
+ * 読み方そのものが変わる:
  *
  *   volume … 単位を伴わない巻数 (`… ぐらんぶる 01.rar`。naming.ts の `bareVolumeAfterFolder`)。
  *            持っている巻が「巻数を読めなかったファイル」へ落ち、欠番の計算から抜け、
@@ -75,9 +205,19 @@ export class RenameError extends Error {}
  *   side  … 別巻の呼び名 (`… 鬼滅の刃 外伝.rar`。同 `sideLabelAfterFolder`)。
  *            要確認へ落ちる。害は巻より小さいが、黙って落とす筋合いも無い
  *
- * 機械には直しようがない (直すならファイル名の側)。数えて人に見せる。
+ * **ファイル名を追従させるようになって、ここはほとんど 0 で通る。** それでも
+ * 残してあるのは、追従できなかったファイル (`stuck`) と、長すぎて詰められた名前が
+ * 同じ落ち方をするため。**この口の約束は「DB に入るのは次のスキャンが出す答えと
+ * 同じ」**で、それが崩れる時は押す前に言う。
  */
-function countLosing(db: Db, seriesId: number, from: string, to: string): { volume: number; side: number } {
+function countLosing(
+  db: Db,
+  seriesId: number,
+  from: string,
+  to: string,
+  moves: FileRename[]
+): { volume: number; side: number } {
+  const renamed = new Map(moves.map((m) => [m.from, m.to]));
   const rows = db.raw
     .prepare('SELECT rel_path, volume_id, side_label FROM files WHERE series_id = ? AND present = 1')
     .all(seriesId) as { rel_path: string; volume_id: number | null; side_label: string | null }[];
@@ -91,7 +231,8 @@ function countLosing(db: Db, seriesId: number, from: string, to: string): { volu
     const sep = rel.includes('\\') ? '\\' : '/';
     const head = from + sep;
     if (!rel.startsWith(head)) continue;
-    const after = parseLibraryEntry(to + sep + rel.slice(head.length));
+    const base = rel.slice(head.length);
+    const after = parseLibraryEntry(to + sep + (renamed.get(base) ?? base));
     if (r.volume_id !== null) {
       if (after.volumeFrom === null) volume++;
     } else if (after.sideLabel === null) {
@@ -140,30 +281,42 @@ export function planRename(
     throw new RenameError(`その作品名ではフォルダ名を作れません: 「${to}」`);
   }
 
-  const noop = to === s.folder;
-  if (!noop && db.findSeriesByFolder(root.id, to)) {
+  const sameFolder = to === s.folder;
+  if (!sameFolder && db.findSeriesByFolder(root.id, to)) {
     throw new RenameError(`同じ名前の作品が既に棚にあります: ${to}`);
   }
+
+  /**
+   * ファイル名は**読み戻した方** (back) から組み立てる。打った文字から組むと、
+   * フォルダだけが全角へ倒れてファイル名と食い違い、前置きが剥がれなくなる。
+   */
+  const { moves, stuck } = planFileRenames(db, seriesId, s.folder, {
+    author: back.author ?? null, title: back.title, completed: input.completed,
+  });
 
   const files = (
     db.raw.prepare('SELECT COUNT(*) AS n FROM files WHERE series_id = ?').get(seriesId) as { n: number }
   ).n;
 
-  const losing = noop ? { volume: 0, side: 0 } : countLosing(db, seriesId, s.folder, to);
+  // フォルダ名が同じでも、ファイル名だけ直す付け替えはありうる
+  // (エクスプローラでフォルダだけ直した後がこの形)。**両方動かない時だけ** noop
+  const noop = sameFolder && moves.length === 0;
+
+  const losing = noop ? { volume: 0, side: 0 } : countLosing(db, seriesId, s.folder, to, moves);
   const losesVolume = losing.volume;
   const losesSide = losing.side;
   const warnings: string[] = [];
   if (losesVolume) {
     warnings.push(
       `${losesVolume} 個のファイルが巻数を読めなくなります。` +
-        'フォルダ名を前置きにして巻数を読んでいるファイル (「… 01.rar」) です。' +
-        '欠番の計算と所持の判定から外れるので、ファイル名の側も直してください'
+        '名前を追従させられなかったファイルです。' +
+        '欠番の計算と所持の判定から外れるので、そのファイルは手で直してください'
     );
   }
   if (losesSide) {
     warnings.push(
       `${losesSide} 個の別巻が呼び名を読めなくなります (「… 外伝.rar」)。` +
-        '要確認に落ちるだけで巻には影響しませんが、ファイル名の側も直すと消えます'
+        '要確認に落ちるだけで巻には影響しません'
     );
   }
 
@@ -175,7 +328,7 @@ export function planRename(
   return {
     seriesId, rootId: root.id, from: s.folder, to,
     title: back.title, author: back.author ?? null, completed: input.completed,
-    files: Number(files), noop, losesVolume, losesSide, warnings,
+    files: Number(files), moves, stuck, noop, losesVolume, losesSide, warnings,
   };
 }
 
@@ -184,6 +337,10 @@ export interface RenameResult {
   from: string;
   to: string;
   files: number;
+  /** 名前を付け替えたファイルの本数 */
+  renamed: number;
+  /** DB にはあるのに棚から消えていたファイル。動かしようがないので飛ばした本数 */
+  missing: number;
   journal: string;
 }
 
@@ -199,9 +356,10 @@ function sameNameIgnoringCase(a: string, b: string): boolean {
  * 順番を守ること:
  *
  *   1. ジャーナルに**先に**書く。fs が成功して DB が失敗した時、
- *      どこへ動かしたかの記録だけは必ず残す (手で戻せる)
+ *      どこへ何という名前で動かしたかの記録だけは必ず残す (手で戻せる)
  *   2. DB を先に書いて、その中で fs を動かし、成功したら COMMIT。
- *      fs が失敗したら ROLLBACK してフォルダも DB も元のまま
+ *      fs が途中で転んだら**動かしたものを逆順に戻してから** ROLLBACK —
+ *      フォルダ名だけ変わってファイル名が古いまま、という半端な姿を残さない
  */
 export function applyRename(
   db: Db,
@@ -210,20 +368,25 @@ export function applyRename(
   dataDir: string
 ): Promise<RenameResult> {
   return withShelfLock(`「${plan.from}」の名前を付け替えています`, async () => {
-    if (plan.noop) {
-      return { ok: true as const, from: plan.from, to: plan.to, files: 0, journal: '' };
-    }
+    const blank = {
+      ok: true as const, from: plan.from, to: plan.to,
+      files: 0, renamed: 0, missing: 0, journal: '',
+    };
+    if (plan.noop) return blank;
 
     // DB の値でも信用しない。`..` を含む名前 1 つで棚の外へ出る
     const src = resolveInsideRoot(root.path, plan.from);
     const dst = resolveInsideRoot(root.path, plan.to);
+    const movesFolder = plan.from !== plan.to;
     if (!fs.existsSync(src)) throw new RenameError(`フォルダが見当たりません: ${plan.from}`);
-    if (fs.existsSync(dst) && !sameNameIgnoringCase(plan.from, plan.to)) {
-      throw new RenameError(`その名前のフォルダが既にあります: ${plan.to}`);
-    }
-    // 計画を立ててから押すまでの間に棚が動いていることがある
-    if (db.findSeriesByFolder(root.id, plan.to)) {
-      throw new RenameError(`同じ名前の作品が既に棚にあります: ${plan.to}`);
+    if (movesFolder) {
+      if (fs.existsSync(dst) && !sameNameIgnoringCase(plan.from, plan.to)) {
+        throw new RenameError(`その名前のフォルダが既にあります: ${plan.to}`);
+      }
+      // 計画を立ててから押すまでの間に棚が動いていることがある
+      if (db.findSeriesByFolder(root.id, plan.to)) {
+        throw new RenameError(`同じ名前の作品が既に棚にあります: ${plan.to}`);
+      }
     }
 
     const journal = path.join(dataDir, 'renames.jsonl');
@@ -233,8 +396,15 @@ export function applyRename(
       JSON.stringify({
         at: new Date().toISOString(), seriesId: plan.seriesId, rootId: root.id,
         from: plan.from, to: plan.to, files: plan.files,
+        // 手で戻せるように、ファイル 1 本ずつの新旧も残す
+        moves: plan.moves.map((m) => [m.from, m.to]),
       }) + '\n'
     );
+
+    // 動かしたものを控えて、転んだら逆順に戻す
+    const undo: (() => void)[] = [];
+    let renamed = 0;
+    let missing = 0;
 
     db.raw.exec('BEGIN');
     try {
@@ -245,14 +415,39 @@ export function applyRename(
         author: plan.author,
         seriesKey: seriesKeyOf(plan.title),
         completed: plan.completed,
+        moves: Object.fromEntries(plan.moves.map((m) => [m.from, m.to])),
       });
-      fs.renameSync(src, dst);
+      if (movesFolder) {
+        fs.renameSync(src, dst);
+        undo.push(() => fs.renameSync(dst, src));
+      }
+      for (const m of plan.moves) {
+        const a = resolveInsideRoot(dst, m.from);
+        const b = resolveInsideRoot(dst, m.to);
+        // 棚から消えているファイル 1 本で全体を倒さない。rel_path は付け替えておいて、
+        // 消えたことは次のスキャンに言わせる (present を倒すのはあちらの仕事)
+        if (!fs.existsSync(a)) {
+          missing++;
+          continue;
+        }
+        fs.renameSync(a, b);
+        undo.push(() => fs.renameSync(b, a));
+        renamed++;
+      }
       db.raw.exec('COMMIT');
     } catch (e) {
+      // **fs を先に戻す。** 戻し切れなかった分はジャーナルに残っている
+      for (const back of undo.reverse()) {
+        try {
+          back();
+        } catch {
+          /* ここで投げると元の理由が消える。残りも戻しに行く */
+        }
+      }
       db.raw.exec('ROLLBACK');
       throw new RenameError(`付け替えに失敗しました: ${(e as Error).message}`);
     }
 
-    return { ok: true as const, from: plan.from, to: plan.to, files: plan.files, journal };
+    return { ...blank, files: plan.files, renamed, missing, journal };
   }, { mutates: true });
 }

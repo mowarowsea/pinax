@@ -381,7 +381,10 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
    */
   app.post<{
     Params: { id: string };
-    Body: { scope?: string; groupKey?: string; title?: string; queryTitle?: string; queryAuthor?: string | null };
+    Body: {
+      scope?: string; groupKey?: string; title?: string; author?: string | null;
+      queryTitle?: string; queryAuthor?: string | null;
+    };
   }>('/api/series/:id/cover-pick', async (req) => {
     const id = Number(req.params.id);
     const series = db.getSeries(id);
@@ -399,6 +402,10 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
       scope,
       groupKey,
       title: String(req.body?.title ?? '').trim() || series.title,
+      // 束の著者。**棚の著者では埋めない** — 空で残しておけば「選んだ時には
+      // 分からなかった」と分かるが、棚の値を写すと、間違っている棚の著者が
+      // 「選んだシリーズの著者」の顔をして名前を直す欄の既定値に出る
+      author: String(req.body?.author ?? '').trim() || null,
       // 選んだ時の検索語をそのまま残す。作品名から組み立て直すと、
       // 人が打ち直した検索語で当てた束を次から引けなくなる
       queryTitle: String(req.body?.queryTitle ?? '').trim() || series.title,

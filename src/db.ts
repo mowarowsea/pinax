@@ -140,6 +140,11 @@ CREATE TABLE IF NOT EXISTS series_pick (
   -- 見出しに出す書名と、外へ投げ直す問い合わせ。**選んだ時の問い合わせをそのまま残す** —
   -- 作品名から組み立て直すと、人が打ち直した検索語で当てた束を二度と引けない
   title TEXT NOT NULL,
+  -- 束の著者を**棚のフォルダ名に書く形**へ寄せたもの (bib/candidates.ts の authorName)。
+  -- 提供元の表記そのまま (NDL の「内藤, 泰弘」) ではフォルダ名にならないので、
+  -- 寄せた方を選んだ時点で控えておく。**名前を直す時の既定値になる** —
+  -- 書名だけ控えて著者を捨てると、人が毎回手で打ち直すことになる
+  author TEXT,
   query_title TEXT NOT NULL,
   query_author TEXT,
   picked_at TEXT NOT NULL
@@ -247,6 +252,8 @@ export interface SeriesPick {
   groupKey: string;
   /** 見出しに出す書名 */
   title: string;
+  /** 束の著者を棚の形へ寄せたもの。選ぶ前に付いた指定では null */
+  author: string | null;
   /** 選んだ時に外へ投げた問い合わせ。取り直す時もこれを使う */
   queryTitle: string;
   queryAuthor: string | null;
@@ -323,6 +330,12 @@ export class Db {
     // 通るので放っておいても埋まる
     if (!cols('files').has('side_label')) {
       this.raw.exec('ALTER TABLE files ADD COLUMN side_label TEXT');
+    }
+    // 選んだ束の著者 (SCHEMA 側の註を参照)。足した直後は null で、
+    // **次に選び直した時にだけ埋まる** — 過去の選択から後付けで当てようとすると、
+    // 束を引き直すために外を叩くことになる (起動のたびに全作品ぶん、が起きる)
+    if (!cols('series_pick').has('author')) {
+      this.raw.exec('ALTER TABLE series_pick ADD COLUMN author TEXT');
     }
     /**
      * 代表表紙 (covers.volume_no IS NULL) を作品ごとに 1 行へ畳む。
@@ -432,10 +445,14 @@ export class Db {
    * `files.rel_path` も一緒に付け替える。**ここを落とすと次のスキャンで
    * 全ファイルが「消えた」に倒れ、同じ数だけ「増えた」が立つ。**
    * 区切りは Windows の `\` と POSIX の `/` の両方を見る (DB は歩いた OS の形で持つ)。
+   *
+   * `moves` は**ファイル名そのものの付け替え** (今の名前 → 新しい名前)。
+   * 何をどう名付け直すかを決めるのは rename.ts で、ここは言われた通りに写すだけ —
+   * 決める側と書く側を分けておかないと、計画で見せた名前と DB の中身がずれる。
    */
   renameSeriesFolder(input: {
     seriesId: number; folder: string; title: string; author: string | null;
-    seriesKey: string; completed: boolean;
+    seriesKey: string; completed: boolean; moves?: Record<string, string>;
   }): SeriesRow {
     const t = now();
     const before = this.getSeries(input.seriesId);
@@ -454,13 +471,26 @@ export class Db {
       .prepare('SELECT id, rel_path, volume_id FROM files WHERE series_id = ?')
       .all(input.seriesId) as { id: number; rel_path: string; volume_id: number | null }[];
     const upd = this.raw.prepare('UPDATE files SET rel_path = ?, side_label = ? WHERE id = ?');
+    /**
+     * 行き先の道が塞がっていることがある。**消えた印の付いた行だけ**どかす。
+     *
+     * `UNIQUE(root_id, rel_path)` があるので、昔そこに居て今は消えている行が
+     * 残っていると付け替えが丸ごと倒れる。名前を戻す向きの付け替えで必ず来る。
+     * 生きている行は消さない — 当たったらそれは付け替えの計画が間違っている。
+     */
+    const clear = this.raw.prepare(
+      'DELETE FROM files WHERE root_id = ? AND rel_path = ? AND id <> ? AND present = 0'
+    );
+    const moves = input.moves ?? {};
     for (const r of rows) {
       const rel = String(r.rel_path);
       const sep = rel.includes('\\') ? '\\' : '/';
       const head = before.folder + sep;
       // 作品フォルダの直下に無いファイル (根に平置き) は触らない
       if (!rel.startsWith(head)) continue;
-      const next = input.folder + sep + rel.slice(head.length);
+      const base = rel.slice(head.length);
+      const next = input.folder + sep + (moves[base] ?? base);
+      clear.run(before.rootId, next, Number(r.id));
       // **別巻の呼び名も読み直す。** フォルダ名を前置きとして剥がして読んでいるので、
       // フォルダが変われば答えも変わる。ここを置き去りにすると次のスキャンまで
       // 「この作品の中の何なのか」が食い違う (この口の約束は、DB に入るのは次のスキャンが
@@ -497,6 +527,7 @@ export class Db {
       scope: String(r.scope),
       groupKey: String(r.group_key),
       title: String(r.title),
+      author: (r.author as string | null) ?? null,
       queryTitle: String(r.query_title),
       queryAuthor: (r.query_author as string | null) ?? null,
       pickedAt: String(r.picked_at),
@@ -507,15 +538,17 @@ export class Db {
   setSeriesPick(input: Omit<SeriesPick, 'pickedAt'>): SeriesPick {
     this.raw
       .prepare(
-        `INSERT INTO series_pick (series_id, scope, group_key, title, query_title, query_author, picked_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO series_pick (series_id, scope, group_key, title, author,
+                                   query_title, query_author, picked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(series_id) DO UPDATE SET
            scope = excluded.scope, group_key = excluded.group_key, title = excluded.title,
+           author = excluded.author,
            query_title = excluded.query_title, query_author = excluded.query_author,
            picked_at = excluded.picked_at`
       )
       .run(
-        input.seriesId, input.scope, input.groupKey, input.title,
+        input.seriesId, input.scope, input.groupKey, input.title, input.author,
         input.queryTitle, input.queryAuthor, now()
       );
     return this.getSeriesPick(input.seriesId)!;
