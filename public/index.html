@@ -501,7 +501,7 @@ button.cover { border: 0; padding: 0; font: inherit; }
 <div class="rd" id="rd" hidden>
   <div class="rd-stage" id="rd-stage"></div>
   <div class="rd-hit" id="rd-hit">
-    <div data-hit="next" style="width:30%"></div><div data-hit="ui" style="width:40%"></div><div data-hit="prev" style="width:30%"></div>
+    <div data-hit="prev" style="width:30%"></div><div data-hit="ui" style="width:40%"></div><div data-hit="next" style="width:30%"></div>
   </div>
   <div class="rd-bar" id="rd-bar">
     <input type="range" id="rd-slider" min="1" max="1" value="1" aria-label="ページ">
@@ -1928,8 +1928,11 @@ function rdSetMode(m) {
   });
 
   /**
-   * 右から左のめくり。**左 30% が次へ** — 右から左へ読むので、進む先は左にある。
-   * スワイプも同じ向きに揃える (左へ払えば次)。真ん中は帯の出し入れ。
+   * 右から左のめくり。**右 30% が次へ、左 30% が前へ。** 真ん中は帯の出し入れ。
+   *
+   * スワイプも揃える (**右へ払えば次**)。次のページは左隣にあるので、
+   * 今のページを右へ送り出すと次が出て来る、という向き。
+   * タップと払う向きが食い違うと指が迷うので、どちらも右が「進む」で揃えてある。
    */
   // 絵を掴む動き (HTML の drag) が始まると pointerup が来ずに pointercancel になる。
   // 止めておかないと、絵の上から始めたスワイプだけが効かない
@@ -1944,7 +1947,7 @@ function rdSetMode(m) {
     const dy = e.clientY - dn.y;
     const d = dn;
     dn = null;
-    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) { rdGo(dx < 0 ? 1 : -1); return; }
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) { rdGo(dx > 0 ? 1 : -1); return; }
     if (Math.abs(dx) > 12 || Math.abs(dy) > 12 || Date.now() - d.t > 500) return;
     const hit = e.target.dataset ? e.target.dataset.hit : null;
     if (hit === 'next') rdGo(1);
