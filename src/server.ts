@@ -7,7 +7,8 @@ import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { checkOwned, getSeriesDetail, listSeries, type OwnQuery } from './catalog.js';
 import { enrichSeries, fillMissingCovers, fillVolumeCovers } from './bib/enrich.js';
-import { applyPick, searchCandidates, setVolumeCover } from './bib/pick.js';
+import { applyPick, coverSlotOf, searchCandidates, setVolumeCover } from './bib/pick.js';
+import { slotKey, slotLabel } from './cover-slot.js';
 import { cacheThumbnail, imageHostAllowed } from './bib/covers.js';
 import type { CandidateProvider } from './bib/candidates.js';
 import { searchNdl } from './bib/ndl.js';
@@ -430,25 +431,40 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   });
 
   /**
-   * 1 巻 (または作品の代表表紙) の絵だけを人の指定で差し替える。
+   * 板 1 枚の絵だけを人の指定で差し替える。**単巻も合本も別巻も代表も同じ口。**
    * 焼いた行に印が立ち、**自動の巡回では二度と上書きされない**。
+   *
+   * 宛先の渡し方は 2 通りで、**どちらか一方だけ**を送る:
+   *
+   *   slot   … 棚の板を押して来た時。詳細が返した宛先をそのまま送り返す
+   *   volume … 候補の一覧から直接貼る時 (数字なら第n巻、null なら代表表紙)
+   *
+   * 候補の側に宛先を組み立てさせないのは、**綴り方を画面にも持たせないため**
+   * (bib/pick.ts の coverSlotOf)。
    */
   app.post<{
     Params: { id: string };
-    Body: { volume?: number | null; provider?: string; imageUrl?: string; isbn?: string | null };
+    Body: {
+      slot?: string | null; volume?: number | null;
+      provider?: string; imageUrl?: string; isbn?: string | null;
+    };
   }>('/api/series/:id/cover', async (req) => {
     const id = Number(req.params.id);
     if (!db.getSeries(id)) throw new HttpError(404, 'その作品はありません');
     const imageUrl = String(req.body?.imageUrl ?? '').trim();
     if (!imageUrl) throw new HttpError(400, 'imageUrl が要ります');
-    const v = req.body?.volume;
-    const volume = v === null || v === undefined ? null : Number(v);
-    if (volume !== null && !Number.isInteger(volume)) throw new HttpError(400, 'volume は整数か null です');
+
+    let slot;
+    try {
+      slot = coverSlotOf({ slot: req.body?.slot, volume: req.body?.volume });
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
 
     try {
       await setVolumeCover(db, cfg, {
         seriesId: id,
-        volume,
+        slot,
         provider: String(req.body?.provider ?? 'manual'),
         imageUrl,
         isbn: req.body?.isbn ?? null,
@@ -456,7 +472,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     } catch (e) {
       throw new HttpError(400, (e as Error).message);
     }
-    return { ok: true, volume };
+    return { ok: true, slot: slotKey(slot), label: slotLabel(slot) };
   });
 
   /**

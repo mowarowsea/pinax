@@ -1,10 +1,14 @@
 import type { Config } from '../config.js';
+import { SERIES_SLOT, volumeSlot } from '../cover-slot.js';
 import type { Db } from '../db.js';
 import { ProviderStopError } from './cache.js';
 import { fetchCover, refreshSeriesCover } from './covers.js';
 import { googleReady } from './google.js';
-import { byVolume, ndlThumbnailUrl, searchNdl, type NdlRecord } from './ndl.js';
+import { byVolume, searchNdl } from './ndl.js';
 import { openbdReady } from './openbd.js';
+import {
+  bibOfNdl, ndlCandidates, pasteCovers, sideCoverTargets, writeBib, type CoverTarget,
+} from './paste.js';
 import { applyPick } from './pick.js';
 import { rakutenReady } from './rakuten.js';
 
@@ -40,8 +44,8 @@ export interface EnrichResult {
   publishedMax: number | null;
   bibWritten: number;
   coversWritten: number;
-  /** 表紙を取れなかった巻 */
-  coverMissed: number[];
+  /** 表紙を取れなかった板の名前 (`第03巻` / `外伝`) */
+  coverMissed: string[];
   cached: boolean;
   stale: boolean;
   /** 人が選んだシリーズを使った時、その書名。null なら書名と著者から自動で当てた */
@@ -55,23 +59,6 @@ export interface EnrichResult {
    */
   stopped: boolean;
   error: string | null;
-}
-
-function writeBib(db: Db, seriesId: number, volumeNo: number | null, r: NdlRecord): void {
-  db.raw
-    .prepare(
-      `INSERT INTO bib (series_id, volume_no, provider, isbn, title, author, publisher, pubdate, cover_url, raw, fetched_at)
-       VALUES (?, ?, 'ndl', ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(series_id, volume_no, provider) DO UPDATE SET
-         isbn = excluded.isbn, title = excluded.title, author = excluded.author,
-         publisher = excluded.publisher, pubdate = excluded.pubdate, cover_url = excluded.cover_url,
-         raw = excluded.raw, fetched_at = excluded.fetched_at`
-    )
-    .run(
-      seriesId, volumeNo, r.isbn, r.title, r.creator, r.publisher, r.date,
-      r.isbn ? ndlThumbnailUrl(r.isbn) : null,
-      JSON.stringify(r), new Date().toISOString()
-    );
 }
 
 export interface EnrichOptions {
@@ -134,7 +121,7 @@ export async function enrichSeries(db: Db, cfg: Config, seriesId: number, opts: 
   // 作品そのものの書誌 (巻なし)。単巻の作品はここにしか載らない
   const seriesRecord = found.records.find((r) => r.volume === null && r.isbn) ?? found.records[0];
   if (seriesRecord) {
-    writeBib(db, seriesId, null, seriesRecord);
+    writeBib(db, seriesId, null, bibOfNdl(seriesRecord));
     out.bibWritten++;
   }
 
@@ -149,57 +136,46 @@ export async function enrichSeries(db: Db, cfg: Config, seriesId: number, opts: 
    * 持っていない巻の表紙まで焼くと「持っている」の意味が濁るし、無駄に外を叩く。
    */
   for (const [vol, rec] of byVol) {
-    writeBib(db, seriesId, vol, rec);
+    writeBib(db, seriesId, vol, bibOfNdl(rec));
     out.bibWritten++;
   }
   out.publishedMax = byVol.size ? Math.max(...byVol.keys()) : null;
 
-  // 表紙を取りに行くのは持っている巻だけ
-  const owned = db
-    .listVolumes(seriesId)
-    .filter((v) => v.present && v.unit === '巻' && v.volumeFrom === v.volumeTo)
-    .map((v) => v.volumeFrom)
-    .sort((a, b) => a - b);
-
-  const budget = opts.coverBudget ?? 200;
-  let spent = 0;
-
-  for (const vol of owned) {
+  /**
+   * 絵を貼る板を並べる。**持っている単巻と、持っている別巻。**
+   *
+   * 合本 (第01-02巻) はここに入れない — 覆う巻の絵を借りて出す作りなので
+   * (catalog.ts の coverFor)、板として別に取りに行くと同じ絵を二度焼くことになる。
+   * 合本じしんの絵は人が「サムネ変更」で選んだ時にだけ載る。
+   *
+   * 別巻は NDL の答えを候補の形へ揃えてから突き合わせる。`鬼滅の刃外伝` のように
+   * **作品名を前置きにした書名**で返ってくるので、棚のファイル名と同じ規則で
+   * 呼び名を剥がせば繋がる (paste.ts の sideLabelOfTitle)。
+   */
+  const targets: CoverTarget[] = db.ownedVolumeNumbers(seriesId).map((vol) => {
     const rec = byVol.get(vol);
-    if (!rec?.isbn) {
-      out.coverMissed.push(vol);
-      continue;
-    }
+    return {
+      slot: volumeSlot(vol),
+      source: rec?.isbn ? { images: [], isbn: rec.isbn } : null,
+    };
+  });
+  targets.push(...sideCoverTargets(db, seriesId, s.title, ndlCandidates(found.records)));
 
-    if (spent >= budget) continue;
-    const already = db.raw
-      .prepare('SELECT pinned FROM covers WHERE series_id = ? AND volume_no = ?')
-      .get(seriesId, vol) as { pinned: number } | undefined;
-    // 人が選んだ 1 枚は取り直しでも触らない。refresh は「外に聞き直す」であって
-    // 「人の指定を捨てる」ではない
-    if (already && (!opts.refresh || Number(already.pinned) === 1)) continue;
-
-    spent++;
-    try {
-      if (await fetchCover(db, cfg, seriesId, vol, rec.isbn)) out.coversWritten++;
-      else out.coverMissed.push(vol);
-    } catch (e) {
-      // 鍵・IP の間違い、1 日の上限は黙って飲まない。残りを回しても全部同じ理由で落ちる
-      if (e instanceof ProviderStopError) return { ...out, stopped: true, error: `${e.message} (${e.detail})` };
-      out.coverMissed.push(vol);
-    }
-  }
+  const pasted = await pasteCovers(db, cfg, seriesId, targets, {
+    budget: opts.coverBudget,
+    overwrite: opts.refresh,
+  });
+  out.coversWritten += pasted.written;
+  out.coverMissed.push(...pasted.missed);
+  if (pasted.stopped) return { ...out, stopped: true, error: pasted.error };
 
   // 代表表紙は、持っている中で一番若い巻のものを流用する
-  const hasVolumeCover = db.raw
-    .prepare('SELECT 1 FROM covers WHERE series_id = ? AND volume_no IS NOT NULL LIMIT 1')
-    .get(seriesId);
-  if (hasVolumeCover) {
+  if (hasVolumeCover(db, seriesId)) {
     refreshSeriesCover(db, seriesId);
   } else if (seriesRecord?.isbn) {
     // 巻の表紙が 1 枚も取れなかった作品 (単巻もの) は、作品の ISBN で 1 枚だけ試す
     try {
-      if (await fetchCover(db, cfg, seriesId, null, seriesRecord.isbn)) out.coversWritten++;
+      if (await fetchCover(db, cfg, seriesId, SERIES_SLOT, seriesRecord.isbn)) out.coversWritten++;
     } catch (e) {
       if (e instanceof ProviderStopError) return { ...out, stopped: true, error: `${e.message} (${e.detail})` };
       // 取れなくても致命的ではない。表紙の無い作品として並ぶ
@@ -207,6 +183,19 @@ export async function enrichSeries(db: Db, cfg: Config, seriesId: number, opts: 
   }
 
   return out;
+}
+
+/**
+ * 番号の付いた板 (単巻・合本) の絵が 1 枚でもあるか。
+ * **代表表紙をそこから流用できるか**の判定で、別巻は数に入らない (covers.ts の
+ * refreshSeriesCover と同じ切り方 — 外伝の絵が作品の顔になると棚で見分けられない)
+ */
+function hasVolumeCover(db: Db, seriesId: number): boolean {
+  return Boolean(
+    db.raw
+      .prepare('SELECT 1 FROM covers WHERE series_id = ? AND volume_no IS NOT NULL LIMIT 1')
+      .get(seriesId)
+  );
 }
 
 /**
@@ -228,7 +217,7 @@ export async function fillMissingCovers(
     .prepare(
       `SELECT id FROM series s
         WHERE s.present = 1
-          AND NOT EXISTS (SELECT 1 FROM covers c WHERE c.series_id = s.id AND c.volume_no IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM covers c WHERE c.series_id = s.id AND c.slot = '')
           AND (s.enriched_at IS NULL OR s.enriched_at < ?)
         ORDER BY s.enriched_at IS NOT NULL, s.enriched_at, s.id LIMIT ?`
     )
@@ -295,8 +284,12 @@ export async function fillVolumeCovers(
           AND EXISTS (SELECT 1 FROM volumes v
                        WHERE v.series_id = b.series_id AND v.present = 1
                          AND b.volume_no BETWEEN v.volume_from AND v.volume_to)
+          -- **板の宛先で見る** (cover-slot.ts)。番号で見ると、合本 (第01-02巻) の板が
+          -- 覆う中で一番若い巻を volume_no に名乗っているせいで、第01巻の絵が
+          -- もう有ることにされて永久に埋まらない
           AND NOT EXISTS (SELECT 1 FROM covers c
-                           WHERE c.series_id = b.series_id AND c.volume_no IS b.volume_no)
+                           WHERE c.series_id = b.series_id
+                             AND c.slot = 'v:巻:' || b.volume_no)
           AND (b.cover_tried_at IS NULL OR b.cover_tried_at < ?)
         ORDER BY b.cover_tried_at IS NOT NULL, b.cover_tried_at, b.series_id, b.volume_no
         LIMIT ?`
@@ -314,7 +307,7 @@ export async function fillVolumeCovers(
     try {
       // 印は**先に**押す。途中で落ちても同じ巻で足踏みしないため
       db.markCoverTried(Number(r.bib_id));
-      const provider = await fetchCover(db, cfg, Number(r.series_id), Number(r.volume_no), String(r.isbn), {
+      const provider = await fetchCover(db, cfg, Number(r.series_id), volumeSlot(Number(r.volume_no)), String(r.isbn), {
         skipNdl: true,
       });
       if (provider) {

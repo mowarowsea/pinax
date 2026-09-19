@@ -631,8 +631,8 @@ async function loadGrid() {
 // ---- 詳細 ---------------------------------------------------------------
 
 /**
- * 持っている 1 点分の板。**巻も別巻も同じ形にする。**
- * どちらも「持っている本」で、数直線に乗るかどうかしか違わない。
+ * 持っている 1 点分の板。**巻も合本も別巻も同じ形にする。**
+ * どれも「持っている本」で、数直線に乗るかどうかしか違わない。
  * 片方をファイルの一覧で出すと、外伝だけ格下の置き場にあるように見える。
  *
  * **表紙を押すと読み始める。** 表紙は本そのものの絵なので、押して開くのがいちばん
@@ -640,13 +640,17 @@ async function loadGrid() {
  *
  * サイズも保存も出さない。落とすのは下のファイル一覧から今まで通りできるし、
  * 読めるようになった今、板の上で要るのは**開く口と、絵を直す口**だけ。
+ *
+ * `slot` は表紙の宛先で、詳細が返したものをそのまま持ち回る (src/cover-slot.ts)。
+ * **画面では組み立てない** — 綴り方が 2 箇所に分かれた時点で、片方だけ直して繋がらなくなる。
  */
 function volCardHtml(cover, label, files, opts = {}) {
   const tags = files.flatMap((x) => x.tags);
   return `<div class="vol${opts.cls ?? ''}">
     ${cover}
     <span class="lbl">${esc(label)}${tags.length ? ' ' + esc(tags.join(',')) : ''}</span>
-    ${opts.pick === undefined ? '' : `<button class="th" data-cover-vol="${opts.pick}">サムネ変更</button>`}
+    ${opts.slot === undefined ? '' : `<button class="th" data-cover-slot="${esc(opts.slot)}"
+      data-cover-label="${esc(label)}">サムネ変更</button>`}
   </div>`;
 }
 
@@ -664,29 +668,31 @@ function volHtml(v) {
   if (v.duplicate) marks.push('<span class="badge warn">複</span>');
   if (v.coverPinned) marks.push('<span class="badge pinned">選</span>');
   if (v.completed) marks.push('<span class="badge done">完</span>');
-  // 表紙を選び直せるのは単巻だけ。合本 (範囲もの) は 1 巻に結び付かないので出さない
-  const single = v.volumeFrom === v.volumeTo;
   const inner = `${coverHtml(v.coverUrl, v.label)}
       ${marks.length ? `<span class="badges">${marks.join('')}</span>` : ''}`;
   return volCardHtml(readCover(v.files, inner, v.label), v.label, v.files, {
     cls: v.duplicate ? ' dup' : '',
-    pick: single ? v.volumeFrom : undefined,
+    slot: v.coverSlot,
   });
 }
 
 /**
  * 別巻 1 点の板。呼び名が空のものは作品そのものなので「本編」と書く。
  *
- * **絵は出ないが、押すと読める。** 書影は巻数で引いていて (covers.volume_no)、
- * 別巻には番号が無いので差し替える先も無い。だがファイルはあるので開ける。
+ * **巻の板と同じだけのことができる。** 絵は書誌から自動で取りに来るし
+ * (bib/paste.ts)、呼び名が空のものは作品の代表表紙を借りて出る。取れなければ
+ * 「サムネ変更」で選び直せる。以前は書影を巻数だけで引いていたので、番号を持たない
+ * 別巻には絵の入る道そのものが無かった。
  *
- * 絵の代わりの文字は入れない。巻の板は表紙が無い時に巻数を書くが、あれは
- * 滅多に出ない状態で、別巻は**必ず絵が無い**。呼び名はすぐ下に出ているので、
- * 入れると「「メガドライブ ミニ」発売記念特別編」が毎回二度書きになる
+ * **絵の代わりの文字は入れない。** 巻の板は表紙が無い時に巻数を書くが、呼び名は
+ * すぐ下に出ているので、入れると「「メガドライブ ミニ」発売記念特別編」が
+ * 毎回二度書きになる
  */
 function sideVolHtml(s) {
   const label = s.label || '本編';
-  return volCardHtml(readCover(s.files, '', label), label, s.files);
+  const inner = `${coverHtml(s.coverUrl, '')}
+      ${s.coverPinned ? '<span class="badges"><span class="badge pinned">選</span></span>' : ''}`;
+  return volCardHtml(readCover(s.files, inner, label), label, s.files, { slot: s.coverSlot });
 }
 
 /**
@@ -1108,8 +1114,8 @@ function wireDetail(d) {
 
   // 表紙を探して選ぶ。作品まるごとと、巻 1 つぶんの 2 つの入口がある
   $('pick-open')?.addEventListener('click', () => openPicker(null));
-  $('detail').querySelectorAll('button[data-cover-vol]').forEach((b) => {
-    b.addEventListener('click', () => openPicker(Number(b.dataset.coverVol)));
+  $('detail').querySelectorAll('button[data-cover-slot]').forEach((b) => {
+    b.addEventListener('click', () => openPicker({ slot: b.dataset.coverSlot, label: b.dataset.coverLabel }));
   });
 
   // 表紙を押したら読み始める
@@ -1212,8 +1218,15 @@ async function reveal(id, fileId) {
  * 板はもう 1 枚重ねない。**詳細の中身だけを差し替える** — 詳細は履歴を 1 つ積んで
  * 開いているので、上にもう 1 枚乗せると Android の戻るでどちらが閉じるのか分からなくなる。
  */
+/**
+ * 表紙を選ぶ画面の持ち物。
+ *
+ * `target` は差し替える板 — `{ slot, label }` で、詳細が返した宛先をそのまま持つ。
+ * **null なら作品全体**で、その時だけシリーズごと乗り換える口が出る。
+ * 以前は板を巻数 (数字) で持っていたので、番号の無い合本と別巻を名指しできなかった。
+ */
 const picker = {
-  seriesId: null, volume: null, q: '', author: '', provider: 'all',
+  seriesId: null, target: null, q: '', author: '', provider: 'all',
   groups: [], open: new Set(), pick: null, note: '', warn: false, body: '',
 };
 
@@ -1232,22 +1245,32 @@ function pkCover(url, fallback) {
 }
 
 function pkItemHtml(c) {
-  // 巻を指定して開いている時は、候補が何巻であろうとその巻へ貼る
-  const target = picker.volume !== null ? picker.volume : c.volume;
   const label = c.volume === null ? '巻なし' : volLabel(c.volume);
-  const use = (t, label) =>
-    `<button class="mini" data-use="${esc(c.imageUrl)}" data-provider="${esc(c.provider)}"
-      data-isbn="${esc(c.isbn ?? '')}" data-target="${t === null ? '' : t}">${label}</button>`;
   /**
-   * 巻に貼る口と、棚に並ぶ 1 枚 (代表表紙) に貼る口を両方出す。
+   * 貼り先の渡し方は 2 通りで、**どちらか一方だけ**を持たせる:
+   *
+   *   data-slot   … 板を押して開いた時。詳細が返した宛先をそのまま送り返す
+   *   data-volume … 候補から直接貼る時 (数字なら第n巻、空なら代表表紙)
+   *
+   * 候補の側で宛先を組み立てないのは、**綴り方を画面にも持たせないため** (volCardHtml)。
+   */
+  const use = (attr, text) =>
+    `<button class="mini" data-use="${esc(c.imageUrl)}" data-provider="${esc(c.provider)}"
+      data-isbn="${esc(c.isbn ?? '')}" ${attr}>${text}</button>`;
+  /**
+   * 板を指定して来た時は、候補が何巻であろうとその板へ貼る。
+   *
+   * そうでない時は、巻に貼る口と棚に並ぶ 1 枚 (代表表紙) に貼る口を両方出す。
    * **代表は「持っている中で一番若い巻」から勝手に決まる** ので、第1-2巻が合本の作品では
    * 第4巻の絵が棚に並ぶ。そこを手で直せる口が要る
    */
   const btn = !c.imageUrl
     ? '<span class="sub">書影なし</span>'
-    : target === null
-      ? use(null, '代表表紙にする')
-      : use(target, volLabel(target) + 'に使う') + (picker.volume === null ? use(null, '代表にする') : '');
+    : picker.target !== null
+      ? use(`data-slot="${esc(picker.target.slot)}"`, picker.target.label + 'に使う')
+      : c.volume === null
+        ? use('data-volume=""', '代表表紙にする')
+        : use(`data-volume="${c.volume}"`, volLabel(c.volume) + 'に使う') + use('data-volume=""', '代表にする');
   return `<div class="pk-item">
     <span class="cover">${pkCover(c.imageUrl, label)}</span>
     <span class="lbl">${esc(label)}</span>
@@ -1267,9 +1290,9 @@ function pkGroupHtml(g) {
     : '巻の並びなし';
   const meta = [g.author, years, vols, g.publisher, `${g.count}件`].filter(Boolean).join(' · ');
   const acts = [];
-  // 巻を指定して開いている時は「シリーズごと乗り換える」を出さない。
+  // 板を指定して開いている時は「シリーズごと乗り換える」を出さない。
   // 押したつもりの無い作品全体の貼り直しが走るのは驚きが大きい
-  if (picker.volume === null) {
+  if (picker.target === null) {
     acts.push(`<button class="btn primary" data-pick="${esc(g.key)}">このシリーズにする</button>`);
   }
   acts.push(`<button class="mini" data-open="${esc(g.key)}">${picker.open.has(g.key) ? '巻を閉じる' : '巻を見る'}</button>`);
@@ -1288,9 +1311,9 @@ function pkGroupHtml(g) {
 }
 
 function renderPicker() {
-  // 巻を指定して来た時だけ、何をしに来たのかを出す。**それ以外の説明書きは置かない** —
+  // 板を指定して来た時だけ、何をしに来たのかを出す。**それ以外の説明書きは置かない** —
   // 並んでいるものを見れば分かることを毎回読ませない
-  const forWhat = picker.volume === null ? '' : `${volLabel(picker.volume)}の表紙だけを差し替えます`;
+  const forWhat = picker.target === null ? '' : `${picker.target.label}の表紙だけを差し替えます`;
   $('detail').innerHTML = `
     <div class="pk-head">
       <button class="btn" id="pk-back">← 作品へ戻る</button>
@@ -1313,11 +1336,11 @@ function renderPicker() {
   wirePicker();
 }
 
-async function openPicker(volume = null) {
+async function openPicker(target = null) {
   const d = lastDetail;
   if (!d) return;
   picker.seriesId = d.id;
-  picker.volume = volume;
+  picker.target = target;
   // 前に選んだ時の検索語があればそれを出す。無ければ棚の作品名と著者。
   // **空で選んだ人は空のまま出す** (著者だけで引き当てた作品がある)
   picker.q = d.pick ? d.pick.queryTitle : d.title;
@@ -1344,10 +1367,10 @@ async function runPickerSearch(refresh) {
     picker.groups = r.groups;
 
     // 開いておくものを決める。選択中のものがあればそれ、無ければ一番巻の揃っているもの。
-    // **巻を指定して来た時は必ず 1 つ開く** — 候補を見に来たのに畳まれていては用を成さない
+    // **板を指定して来た時は必ず 1 つ開く** — 候補を見に来たのに畳まれていては用を成さない
     const chosen = r.groups.find((g) => r.pick && g.key === r.pick.groupKey);
     const head = chosen ?? r.groups[0];
-    const openHead = picker.volume !== null || r.groups.length === 1;
+    const openHead = picker.target !== null || r.groups.length === 1;
     picker.open = new Set(openHead && head ? [head.key] : chosen ? [chosen.key] : []);
 
     // **うまくいった時は何も言わない。** 言うのは相手が落ちていた時と、0 件だった時だけ
@@ -1430,24 +1453,28 @@ async function choosePickedGroup(btn) {
   }
 }
 
-/** 1 巻 (または代表表紙) の絵だけ差し替える。書誌は触らない */
+/** 板 1 枚の絵だけ差し替える。書誌は触らない */
 async function useOneCover(btn) {
-  const target = btn.dataset.target === '' ? null : Number(btn.dataset.target);
+  // 宛先は片方だけ送る (pkItemHtml)。名前はサーバーが返したものを使う —
+  // 板の呼び方を画面でも組み立てると、言い方が 2 通りに割れる
+  const where = btn.dataset.slot !== undefined
+    ? { slot: btn.dataset.slot }
+    : { volume: btn.dataset.volume === '' ? null : Number(btn.dataset.volume) };
   const before = btn.textContent;
   btn.disabled = true;
   btn.innerHTML = '<span class="spin"></span>';
   try {
-    await api(`/api/series/${picker.seriesId}/cover`, {
+    const r = await api(`/api/series/${picker.seriesId}/cover`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        volume: target, provider: btn.dataset.provider,
+        ...where, provider: btn.dataset.provider,
         imageUrl: btn.dataset.use, isbn: btn.dataset.isbn || null,
       }),
     });
-    toast(target === null ? '代表表紙にしました' : `${volLabel(target)}の表紙にしました`);
+    toast(r.slot === '' ? '代表表紙にしました' : `${r.label}の表紙にしました`);
     await loadGrid();
-    // 巻を指定して来たなら用は済んだ。作品へ戻って結果を見せる
-    if (picker.volume !== null) { await openDetail(picker.seriesId, 'keep'); return; }
+    // 板を指定して来たなら用は済んだ。作品へ戻って結果を見せる
+    if (picker.target !== null) { await openDetail(picker.seriesId, 'keep'); return; }
     btn.disabled = false;
     btn.textContent = before;
   } catch (e) {

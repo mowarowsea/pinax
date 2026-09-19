@@ -1,13 +1,17 @@
 import type { Config } from '../config.js';
+import { parseSlot, SERIES_SLOT, slotLabel, volumeSlot, type CoverSlot } from '../cover-slot.js';
 import type { Db, SeriesPick } from '../db.js';
 import { ProviderStopError } from './cache.js';
 import {
   byVolumeOf, googleCandidate, groupCandidates, imageCandidatesOf, ndlCandidate, rakutenCandidate,
   type Candidate, type CandidateGroup, type CandidateProvider,
 } from './candidates.js';
-import { fetchAndBurn, fetchCover, refreshSeriesCover, writeCover, imageHostAllowed } from './covers.js';
+import { fetchAndBurn, refreshSeriesCover, writeCover, imageHostAllowed } from './covers.js';
 import { googleReady, searchGoogle } from './google.js';
 import { searchNdl } from './ndl.js';
+import {
+  bibOfCandidate, burnFromCandidates, pasteCovers, sideCoverTargets, writeBib, type CoverTarget,
+} from './paste.js';
 import { rakutenReady, searchRakuten } from './rakuten.js';
 
 /**
@@ -131,67 +135,11 @@ export interface PickResult {
   publishedMax: number | null;
   bibWritten: number;
   coversWritten: number;
-  /** 表紙を取れなかった巻 */
-  coverMissed: number[];
+  /** 表紙を取れなかった板の名前 (`第03巻` / `外伝`) */
+  coverMissed: string[];
   /** 回しても無駄なので打ち切ったか (enrich.ts の EnrichResult と同じ) */
   stopped: boolean;
   error: string | null;
-}
-
-/** 候補 1 冊を bib の 1 行にする。生の候補ごと raw に残す (解釈を後から直せるように) */
-function writeBib(db: Db, seriesId: number, volumeNo: number | null, c: Candidate): void {
-  db.raw
-    .prepare(
-      `INSERT INTO bib (series_id, volume_no, provider, isbn, title, author, publisher, pubdate, cover_url, raw, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(series_id, volume_no, provider) DO UPDATE SET
-         isbn = excluded.isbn, title = excluded.title, author = excluded.author,
-         publisher = excluded.publisher, pubdate = excluded.pubdate, cover_url = excluded.cover_url,
-         raw = excluded.raw, fetched_at = excluded.fetched_at`
-    )
-    .run(
-      seriesId, volumeNo, c.provider, c.isbn, c.title, c.author, c.publisher, c.date,
-      c.imageUrl, JSON.stringify(c), new Date().toISOString()
-    );
-}
-
-/** 人が選んだ束の 1 冊から表紙を焼く。ISBN 頼みの道より**確実**で、絵も候補で見たものと同じになる */
-async function burnFromCandidate(
-  db: Db,
-  cfg: Config,
-  seriesId: number,
-  volumeNo: number | null,
-  c: Candidate,
-  opts: { pinned?: boolean } = {}
-): Promise<boolean> {
-  if (!c.imageUrl || !imageHostAllowed(c.imageUrl)) return false;
-  const burned = await fetchAndBurn(cfg, `${c.provider}-image`, c.imageUrl);
-  if (!burned) return false;
-  writeCover(db, {
-    seriesId, volumeNo, provider: c.provider, sourceUrl: c.imageUrl, isbn: c.isbn, burned,
-    pinned: opts.pinned,
-  });
-  return true;
-}
-
-/**
- * 束がこの巻に出せる絵を、**画面に並んでいる順に試す**。1 冊で諦めない。
- *
- * 書影 URL があることと、その URL が絵を返すことは別
- * (candidates.ts の `imageCandidatesOf`)。初版で 404 を食らったところで打ち切ると、
- * 同じ巻の新装版が候補として画面に出ていても一度も試されないまま束の外へ落ちる。
- */
-async function burnFromGroup(
-  db: Db,
-  cfg: Config,
-  seriesId: number,
-  volumeNo: number | null,
-  cands: Candidate[]
-): Promise<boolean> {
-  for (const c of cands) {
-    if (await burnFromCandidate(db, cfg, seriesId, volumeNo, c)) return true;
-  }
-  return false;
 }
 
 /**
@@ -257,7 +205,7 @@ export async function applyPick(
    * (enrich.ts と同じ立場)。表紙は持っている巻の分しか取りに行かない。
    */
   for (const [vol, c] of byVol) {
-    writeBib(db, seriesId, vol, c);
+    writeBib(db, seriesId, vol, bibOfCandidate(c));
     out.bibWritten++;
   }
 
@@ -265,61 +213,45 @@ export async function applyPick(
   // ファンブックや小説版が作品の代表になると、出版社も ISBN も別物になる
   const head = (group.volumes.length ? byVol.get(group.volumes[0]) : null) ?? group.items[0];
   if (head) {
-    writeBib(db, seriesId, null, head);
+    writeBib(db, seriesId, null, bibOfCandidate(head));
     out.bibWritten++;
   }
 
-  const owned = db
-    .listVolumes(seriesId)
-    .filter((v) => v.present && v.unit === '巻' && v.volumeFrom === v.volumeTo)
-    .map((v) => v.volumeFrom)
-    .sort((a, b) => a - b);
-
-  const budget = opts.coverBudget ?? 200;
-  let spent = 0;
-
-  for (const vol of owned) {
+  /**
+   * 絵を貼る板を並べる。**持っている単巻と、持っている別巻** (enrich.ts と同じ切り方)。
+   *
+   * 巻の板には**この巻に出ている候補を全部渡す。** 束の先頭 1 冊 (= 書誌に採った初版)
+   * だけを試して終わると、その版に書影が無いだけで束の外の道へ落ちていく。
+   * ARMS がそれで、1997年の初版は NDL にサムネイルが無く、画面に並んでいた
+   * 2007年・2014年の新装版は一度も試されないまま、Google の 128px の
+   * 目次ページが棚に載っていた (2026-09-17)。
+   */
+  const targets: CoverTarget[] = db.ownedVolumeNumbers(seriesId).map((vol) => {
     const c = byVol.get(vol);
-    if (!c) {
-      out.coverMissed.push(vol);
-      continue;
-    }
-    if (spent >= budget) continue;
-    // 人が個別に選んだ巻は触らない
-    const pinned = db.raw
-      .prepare('SELECT 1 FROM covers WHERE series_id = ? AND volume_no = ? AND pinned = 1')
-      .get(seriesId, vol);
-    if (pinned) continue;
-
-    spent++;
-    try {
-      /**
-       * まず**候補で見せた絵そのもの**を焼く。人が選んだ画面と棚が食い違わないように。
-       *
-       * **この巻に出ている候補を全部試す。** 束の先頭 1 冊 (= 書誌に採った初版) だけを
-       * 試して終わると、その版に書影が無いだけで束の外の道へ落ちていく。
-       * ARMS がそれで、1997年の初版は NDL にサムネイルが無く、画面に並んでいた
-       * 2007年・2014年の新装版は一度も試されないまま、Google の 128px の
-       * 目次ページが棚に載っていた (2026-09-17)。
-       */
-      if (await burnFromGroup(db, cfg, seriesId, vol, imageCandidatesOf(group, vol))) {
-        out.coversWritten++;
-        continue;
-      }
-      // NDL は ISBN の半分ほどしか書影を持たない。そこは楽天に回す
-      const got = c.isbn
-        ? await fetchCover(db, cfg, seriesId, vol, c.isbn, {
+    return {
+      slot: volumeSlot(vol),
+      source: c
+        ? {
+          images: imageCandidatesOf(group, vol),
+          isbn: c.isbn,
+          // NDL は ISBN の半分ほどしか書影を持たない。そこは楽天に回す
           skipNdl: c.provider === 'ndl',
           titleForFallback: group.title,
-        })
-        : null;
-      if (got) out.coversWritten++;
-      else out.coverMissed.push(vol);
-    } catch (e) {
-      if (e instanceof ProviderStopError) return { ...out, stopped: true, error: `${e.message} (${e.detail})` };
-      out.coverMissed.push(vol);
-    }
-  }
+        }
+        : null,
+    };
+  });
+  targets.push(...sideCoverTargets(db, seriesId, s.title, group.items));
+
+  // pinned 以外の行は上で落としてあるので、残っているのは人が選んだ 1 枚だけ。
+  // **貼り直しに来た以上、残りは全部取り直す**
+  const pasted = await pasteCovers(db, cfg, seriesId, targets, {
+    budget: opts.coverBudget,
+    overwrite: true,
+  });
+  out.coversWritten += pasted.written;
+  out.coverMissed.push(...pasted.missed);
+  if (pasted.stopped) return { ...out, stopped: true, error: pasted.error };
 
   /**
    * 巻の表紙が 1 枚も焼けなかった作品 (単巻もの、全部が合本の作品) は、
@@ -333,7 +265,7 @@ export async function applyPick(
   const hasCover = db.raw.prepare('SELECT 1 FROM covers WHERE series_id = ? LIMIT 1').get(seriesId);
   if (!hasCover && head) {
     try {
-      if (await burnFromGroup(db, cfg, seriesId, null, imageCandidatesOf(group, null).slice(0, 6))) {
+      if (await burnFromCandidates(db, cfg, seriesId, SERIES_SLOT, imageCandidatesOf(group, null).slice(0, 6))) {
         out.coversWritten++;
       }
     } catch (e) {
@@ -348,15 +280,15 @@ export async function applyPick(
 
 export interface VolumeCoverInput {
   seriesId: number;
-  /** null なら作品の代表表紙そのものを差し替える */
-  volume: number | null;
+  /** 差し替える板。代表・単巻・合本・別巻のどれでもよい (src/cover-slot.ts) */
+  slot: CoverSlot;
   provider: string;
   imageUrl: string;
   isbn?: string | null;
 }
 
 /**
- * 1 巻ぶんの表紙を人の指定で差し替える。
+ * 板 1 枚の表紙を人の指定で差し替える。**単巻も合本も別巻も代表も同じ道を通る。**
  *
  * 焼いた行に `pinned` を立てるので、**この 1 枚は自動の巡回で二度と上書きされない**。
  * 書誌 (bib) は触らない — 人が直したいのは絵であって、「何巻まで出ているか」ではない。
@@ -370,7 +302,7 @@ export async function setVolumeCover(db: Db, cfg: Config, input: VolumeCoverInpu
 
   writeCover(db, {
     seriesId: input.seriesId,
-    volumeNo: input.volume,
+    slot: input.slot,
     provider: input.provider,
     sourceUrl: input.imageUrl,
     isbn: input.isbn ?? null,
@@ -378,7 +310,35 @@ export async function setVolumeCover(db: Db, cfg: Config, input: VolumeCoverInpu
     pinned: true,
   });
 
-  // 巻を差し替えたら代表表紙も追う (代表そのものが pinned なら refreshSeriesCover が避ける)
-  if (input.volume !== null) refreshSeriesCover(db, input.seriesId);
+  /**
+   * 番号を持つ板 (単巻・合本) を差し替えたら代表表紙も追う
+   * (代表そのものが pinned なら refreshSeriesCover が避ける)。
+   *
+   * **別巻では追わない。** 外伝の絵が作品の顔になると、棚で作品を見分けられなくなる
+   * (covers.ts の refreshSeriesCover と同じ切り方)。
+   */
+  if (input.slot.kind === 'volume') refreshSeriesCover(db, input.seriesId);
   return { ok: true };
 }
+
+/**
+ * 画面から届いた板の宛先を読む。**どちらか一方だけが来る** —
+ * 棚の板を押した時は `slot` が、候補の一覧から直接貼る時は `volume` が来る。
+ *
+ * 候補の側に `slot` を組ませないのは、**宛先の綴り方を画面にも持たせないため**。
+ * 書き方が 2 箇所に分かれた時点で、片方だけ直して二度と繋がらなくなる。
+ */
+export function coverSlotOf(input: { slot?: string | null; volume?: number | null }): CoverSlot {
+  if (input.slot !== undefined && input.slot !== null) {
+    const slot = parseSlot(input.slot);
+    if (!slot) throw new Error(`表紙の宛先を読めません: ${input.slot}`);
+    return slot;
+  }
+  const v = input.volume;
+  if (v === null || v === undefined) return SERIES_SLOT;
+  if (!Number.isInteger(v)) throw new Error('volume は整数か null です');
+  return volumeSlot(v);
+}
+
+/** 差し替えた先を人に言う時の名前 (`第01-02巻の表紙にしました`) */
+export { slotLabel };

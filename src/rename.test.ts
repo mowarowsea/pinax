@@ -55,8 +55,8 @@ test('作品名を直すと series.id が変わらない — 表紙も選択も�
     ['[天空すふぃあ] ブルータル 異世界で邪神の力を手に入れた 第01巻.rar']);
   // 焼いた表紙と選んだ系列がぶら下がっている状態を作る
   db.raw.prepare(
-    `INSERT INTO covers (series_id, volume_no, provider, file, bytes, created_at)
-     VALUES (?, NULL, 'ndl', 'x.jpg', 1, '2026-01-01')`
+    `INSERT INTO covers (series_id, slot, volume_no, provider, file, bytes, created_at)
+     VALUES (?, '', NULL, 'ndl', 'x.jpg', 1, '2026-01-01')`
   ).run(id);
 
   const plan = planRename(db, root, id, { title: 'ブルターニュ花嫁異聞', author: '天空すふぃあ', completed: false });

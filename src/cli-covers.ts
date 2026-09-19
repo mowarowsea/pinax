@@ -46,7 +46,8 @@ const remaining = (): number =>
             AND EXISTS (SELECT 1 FROM volumes v
                          WHERE v.series_id = b.series_id AND v.present = 1
                            AND b.volume_no BETWEEN v.volume_from AND v.volume_to)
-            AND NOT EXISTS (SELECT 1 FROM covers c WHERE c.series_id = b.series_id AND c.volume_no IS b.volume_no)`
+            AND NOT EXISTS (SELECT 1 FROM covers c WHERE c.series_id = b.series_id
+                             AND c.slot = 'v:巻:' || b.volume_no)`
       )
       .get() as { n: number }
   ).n;

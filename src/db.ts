@@ -17,6 +17,36 @@ import { parseLibraryEntry } from './naming.js';
  * フォルダ名を知らない。用途が違うので列も分ける (docs/ARCHITECTURE.md 3 章)。
  */
 
+/**
+ * 外から取った書影。**必ずローカルに焼いてから行を作る** ("Never burn")。
+ *
+ * 宛先は `slot` 1 本 (src/cover-slot.ts)。単巻も合本も別巻も代表も同じ形で名指しできる。
+ * **表を作り直す移行がここを読み直す** ので、SCHEMA から切り出してある。
+ */
+const COVERS_TABLE = `
+CREATE TABLE IF NOT EXISTS covers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+  -- 表紙の宛先。'' が代表、'v:巻:3' が第03巻、'v:巻:1-2' が合本、's:外伝' が別巻。
+  -- **一意の宛先はこれ 1 本**で、代表を部分索引で縛る特例は要らない
+  slot TEXT NOT NULL DEFAULT '',
+  -- この板が覆う一番若い巻。**宛先ではなく並べ替えの鍵**で、代表と別巻は null。
+  -- 代表表紙を「持っている中で一番若い巻」の絵に合わせるために要る
+  volume_no INTEGER,
+  provider TEXT NOT NULL,
+  source_url TEXT,
+  isbn TEXT,
+  file TEXT NOT NULL,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  content_type TEXT,
+  -- 人が画面で選んだ表紙。**立っている行を自動の巡回は上書きしない。**
+  -- series.completed_user と同じ立場 (機械の当てずっぽうより人の判断が上)
+  pinned INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  UNIQUE(series_id, slot)
+);
+`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS series (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,24 +115,7 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE INDEX IF NOT EXISTS files_series_idx ON files(series_id);
 CREATE INDEX IF NOT EXISTS files_volume_idx ON files(volume_id);
 
--- 外から取った書影。**必ずローカルに焼いてから行を作る** ("Never burn")。
--- volume_no が null なら作品の代表表紙
-CREATE TABLE IF NOT EXISTS covers (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
-  volume_no INTEGER,
-  provider TEXT NOT NULL,
-  source_url TEXT,
-  isbn TEXT,
-  file TEXT NOT NULL,
-  bytes INTEGER NOT NULL DEFAULT 0,
-  content_type TEXT,
-  -- 人が画面で選んだ表紙。**立っている行を自動の巡回は上書きしない。**
-  -- series.completed_user と同じ立場 (機械の当てずっぽうより人の判断が上)
-  pinned INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  UNIQUE(series_id, volume_no)
-);
+${COVERS_TABLE}
 
 -- 外から取った書誌。raw は加工前のまま持つ — 解釈を後から直せるようにするため
 CREATE TABLE IF NOT EXISTS bib (
@@ -338,41 +351,64 @@ export class Db {
       this.raw.exec('ALTER TABLE series_pick ADD COLUMN author TEXT');
     }
     /**
-     * 代表表紙 (covers.volume_no IS NULL) を作品ごとに 1 行へ畳む。
+     * covers に**表紙の宛先** (slot) を入れる。src/cover-slot.ts の頭に形がある。
      *
-     * `UNIQUE(series_id, volume_no)` は**代表には効いていなかった。** SQLite は
-     * 一意制約の中で NULL 同士を別物として扱うので、writeCover の
-     * `ON CONFLICT(series_id, volume_no)` が代表では一度も当たらず、
-     * 取り直すたびに行が増えていた (手元の棚で 520 作品に 1637 行、
-     * うち 149 作品は行によって**中身の違う絵**を指していた。2026-09-18 に実測)。
+     * 入れるまで名指しできたのは代表と単巻だけで、合本 (第01-02巻) は第01巻の絵を
+     * 借りて出し、別巻 (外伝) には絵の入る道そのものが無かった。**どちらも
+     * 「人が選び直す先が無い」という同じ欠け**なので、宛先を 1 本に揃えて塞ぐ。
      *
-     * 読む側 (catalog.ts) は並べ替えずに 1 行引くので、拾うのは**一番古い行**になる。
-     * つまり最初に貼った絵が棚の顔に居座り、後から取り直しても変わらず、
-     * **画面で「代表にする」を押しても効かない** (pinned を立てた行が新しい方に居るため)。
+     * **表ごと作り直す。** ALTER では table 制約の `UNIQUE(series_id, volume_no)` を
+     * 落とせず、残したままだと合本の板 (覆う中で一番若い巻を volume_no に名乗る) と
+     * 第01巻の板が同じ番号を取り合って弾かれる。
      *
-     * 残すのは「人が選んだ行 → 新しい行」の順に 1 行だけ。焼いた画像には触らない
-     * (同じ file を他の巻の行が指している)。以後は下の部分索引が増殖を止める。
+     * 移し替えは `volume_no → 'v:巻:n'`。**単位は巻と決め打つ** — 以前の covers は
+     * 単位を持っておらず、混ざっていた「第224話」の表紙と見分けようが無い。
+     * 取り違えても次の取り直しで正しい板へ貼り直るので、ここでは一番多い方に寄せる。
      */
-    this.raw.exec(
-      `DELETE FROM covers WHERE volume_no IS NULL AND id NOT IN (
-         SELECT id FROM (
-           SELECT id, ROW_NUMBER() OVER (
-             PARTITION BY series_id ORDER BY pinned DESC, id DESC
-           ) AS rn FROM covers WHERE volume_no IS NULL
-         ) WHERE rn = 1
-       )`
-    );
+    if (!cols('covers').has('slot')) {
+      /**
+       * 移す前に、増殖した代表表紙 (volume_no IS NULL) を作品ごとに 1 行へ畳む。
+       *
+       * `UNIQUE(series_id, volume_no)` は**代表には効いていなかった。** SQLite は
+       * 一意制約の中で NULL 同士を別物として扱うので、writeCover の
+       * `ON CONFLICT(series_id, volume_no)` が代表では一度も当たらず、
+       * 取り直すたびに行が増えていた (手元の棚で 520 作品に 1637 行、
+       * うち 149 作品は行によって**中身の違う絵**を指していた。2026-09-18 に実測)。
+       *
+       * 読む側 (catalog.ts) は並べ替えずに 1 行引くので、拾うのは**一番古い行**になる。
+       * つまり最初に貼った絵が棚の顔に居座り、後から取り直しても変わらず、
+       * **画面で「代表にする」を押しても効かない** (pinned を立てた行が新しい方に居るため)。
+       *
+       * 残すのは「人が選んだ行 → 新しい行」の順に 1 行だけ。焼いた画像には触らない
+       * (同じ file を他の巻の行が指している)。以後は `UNIQUE(series_id, slot)` が
+       * 増殖そのものを止めるので、**畳むのはこの 1 回きり**。
+       */
+      this.raw.exec(
+        `DELETE FROM covers WHERE volume_no IS NULL AND id NOT IN (
+           SELECT id FROM (
+             SELECT id, ROW_NUMBER() OVER (
+               PARTITION BY series_id ORDER BY pinned DESC, id DESC
+             ) AS rn FROM covers WHERE volume_no IS NULL
+           ) WHERE rn = 1
+         )`
+      );
+      this.raw.exec('ALTER TABLE covers RENAME TO covers_old');
+      this.raw.exec(COVERS_TABLE);
+      this.raw.exec(
+        `INSERT INTO covers (series_id, slot, volume_no, provider, source_url, isbn,
+                             file, bytes, content_type, pinned, created_at)
+           SELECT series_id,
+                  CASE WHEN volume_no IS NULL THEN '' ELSE 'v:巻:' || volume_no END,
+                  volume_no, provider, source_url, isbn,
+                  file, bytes, content_type, pinned, created_at
+             FROM covers_old`
+      );
+      this.raw.exec('DROP TABLE covers_old');
+    }
 
     // 列を足した後に張る。SCHEMA 側に置くと、既にある DB では列より先に走って失敗する
     this.raw.exec('CREATE INDEX IF NOT EXISTS series_enriched_idx ON series(enriched_at)');
     this.raw.exec('CREATE INDEX IF NOT EXISTS bib_cover_tried_idx ON bib(cover_tried_at)');
-    /**
-     * 代表表紙は作品に 1 枚。**NULL を含む一意制約の代わり**に部分索引で縛る。
-     * writeCover はここを ON CONFLICT の宛先に名指しする
-     */
-    this.raw.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS covers_series_cover ON covers(series_id) WHERE volume_no IS NULL'
-    );
   }
 
   /** この bib 行の表紙を取りに行った印。**失敗した時こそ押す** */
@@ -609,6 +645,42 @@ export class Db {
       .prepare('SELECT * FROM volumes WHERE series_id = ? ORDER BY unit, volume_from')
       .all(seriesId) as Record<string, unknown>[];
     return rs.map(toVolume);
+  }
+
+  /**
+   * 持っている**単巻**の番号 (昇順)。表紙を取りに行く先はこれ。
+   *
+   * 合本 (第01-02巻) も別の単位 (第224話) も入らない。合本の中の巻は
+   * 「持ってはいる」が 1 冊ぶんの絵しか要らず、そちらは板として別に数える
+   * (cover-slot.ts)。単位が違うものは外の書誌が巻として知らないので聞きようがない。
+   */
+  ownedVolumeNumbers(seriesId: number, unit = '巻'): number[] {
+    const rs = this.raw
+      .prepare(
+        `SELECT volume_from FROM volumes
+          WHERE series_id = ? AND present = 1 AND unit = ? AND volume_from = volume_to
+          ORDER BY volume_from`
+      )
+      .all(seriesId, unit) as { volume_from: number }[];
+    return rs.map((r) => Number(r.volume_from));
+  }
+
+  /**
+   * 別巻の呼び名 (昇順)。**作品そのもの (空文字) を先頭に置く。**
+   *
+   * `side_label IS NULL` は「呼び名も読めなかったファイル」で、別巻ではない
+   * (catalog.ts の SeriesIssues)。板を持たないので、ここには出さない。
+   */
+  listSideLabels(seriesId: number): string[] {
+    const rs = this.raw
+      .prepare(
+        `SELECT DISTINCT side_label FROM files
+          WHERE series_id = ? AND present = 1 AND volume_id IS NULL AND side_label IS NOT NULL`
+      )
+      .all(seriesId) as { side_label: string }[];
+    return rs
+      .map((r) => String(r.side_label))
+      .sort((a, b) => (a ? 1 : 0) - (b ? 1 : 0) || a.localeCompare(b, 'ja'));
   }
 
   // ---- files -------------------------------------------------------------

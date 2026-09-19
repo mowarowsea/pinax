@@ -327,29 +327,69 @@ test('巻を 1 つも読めない作品は作品の登録日で並ぶ', () => {
   assert.equal(updated.items[0].volumeAddedAt, '2099-01-01T00:00:00.000Z');
 });
 
-test('合本の板には、覆う巻のうち一番若い巻の表紙を出す', () => {
+test('合本の板には、覆う巻のうち一番若い巻の表紙を借りて出す', () => {
   // 第01-06巻 は 1 つの板に畳まれるので、置ける絵は 1 枚。第01巻の絵が素直。
   // 単巻 (from = to) に限っていた頃は、合本でしか持っていない巻が絵無しで残った
   const id = seed('[武論尊×原哲夫] 北斗の拳', '北斗の拳', '武論尊×原哲夫', [[1, 6, '巻']]);
+  const cover = (slot: string, file: string, pinned = 0) =>
+    db.raw.prepare(
+      `INSERT INTO covers (series_id, slot, volume_no, provider, file, bytes, pinned, created_at)
+       VALUES (?, ?, NULL, 'rakuten', ?, 1, ?, '2026-01-01')`
+    ).run(id, slot, file, pinned);
+  const bundleOf = () => getSeriesDetail(db, id)!.volumes.find((v) => v.volumeFrom === 1 && v.volumeTo === 6)!;
+
+  cover('v:巻:2', 'v2.jpg', 1);
+  assert.ok(bundleOf().coverUrl, '合本にも絵が付く');
+  assert.equal(bundleOf().coverPinned, false, '借りてきた絵に「選」は立てない — 押しても外れない印になる');
+
+  // 第01巻の絵が入ったら、そちらが勝つ (一番若い巻)
+  cover('v:巻:1', 'v1.jpg');
+  const first = db.raw.prepare("SELECT id FROM covers WHERE series_id = ? AND slot = 'v:巻:1'").get(id) as { id: number };
+  assert.equal(bundleOf().coverUrl, `/api/covers/${first.id}?v=v1`);
+
+  // 合本じしんの絵を人が選んだら、借りるのをやめてそちらを出す。**印もそこに立つ**
+  cover('v:巻:1-6', 'omnibus.jpg', 1);
+  const own = db.raw.prepare("SELECT id FROM covers WHERE series_id = ? AND slot = 'v:巻:1-6'").get(id) as { id: number };
+  assert.equal(bundleOf().coverUrl, `/api/covers/${own.id}?v=omnibus.jpg`.replace('.jpg', ''));
+  assert.equal(bundleOf().coverPinned, true);
+  // 第01巻の板は巻き添えにならない
+  assert.equal(getSeriesDetail(db, id)!.volumes.find((v) => v.volumeFrom === 1 && v.volumeTo === 6)!.coverSlot, 'v:巻:1-6');
+});
+
+test('別巻の板。呼び名が空のものは作品の代表表紙を借りる', () => {
+  // RAIDEN-18 の「本編」が無地のままだったのがこれ。呼び名が空なのは
+  // 「1 冊で完結している作品そのもの」で、代表表紙はまさにその本の絵になっている
+  const id = seed('[荒川弘] RAIDEN-18', 'RAIDEN-18', '荒川弘', []);
   db.raw.prepare(
-    `INSERT INTO covers (series_id, volume_no, provider, file, bytes, pinned, created_at)
-     VALUES (?, 2, 'rakuten', 'v2.jpg', 1, 1, '2026-01-01')`
+    `INSERT INTO files (root_id, rel_path, series_id, volume_id, size, ext, part, tags, present, first_seen_at, last_seen_at, side_label)
+     VALUES ('test', ?, ?, NULL, 1, '.rar', '', '[]', 1, '2026-01-01', '2026-01-01', ?)`
+  ).run(`RAIDEN-18/RAIDEN-18.rar`, id, '');
+  db.raw.prepare(
+    `INSERT INTO files (root_id, rel_path, series_id, volume_id, size, ext, part, tags, present, first_seen_at, last_seen_at, side_label)
+     VALUES ('test', ?, ?, NULL, 1, '.rar', '', '[]', 1, '2026-01-01', '2026-01-01', ?)`
+  ).run(`RAIDEN-18/RAIDEN-18 外伝.rar`, id, '外伝');
+  db.raw.prepare(
+    `INSERT INTO covers (series_id, slot, volume_no, provider, file, bytes, pinned, created_at)
+     VALUES (?, '', NULL, 'ndl', 'rep.jpg', 1, 0, '2026-01-01')`
   ).run(id);
 
   const d = getSeriesDetail(db, id)!;
-  const bundle = d.volumes.find((v) => v.volumeFrom === 1 && v.volumeTo === 6)!;
-  assert.ok(bundle.coverUrl, '合本にも絵が付く');
-  assert.equal(bundle.coverPinned, false, '「選」の印は立てない — 合本からは選び直せない');
+  const honpen = d.side.find((x) => x.label === '')!;
+  const gaiden = d.side.find((x) => x.label === '外伝')!;
+  assert.equal(honpen.coverUrl, d.coverUrl, '作品そのものの板には代表表紙が出る');
+  assert.equal(honpen.coverPinned, false, '借りてきた絵に「選」は立てない');
+  assert.equal(honpen.coverSlot, 's:');
+  assert.equal(gaiden.coverUrl, null, '外伝は代表表紙を借りない — 持っていない本の絵が並ぶ');
+  assert.equal(gaiden.coverSlot, 's:外伝');
 
-  // 第01巻の絵が入ったら、そちらが勝つ (一番若い巻)
+  // 外伝じしんの絵が入れば出る
   db.raw.prepare(
-    `INSERT INTO covers (series_id, volume_no, provider, file, bytes, created_at)
-     VALUES (?, 1, 'rakuten', 'v1.jpg', 1, '2026-01-01')`
+    `INSERT INTO covers (series_id, slot, volume_no, provider, file, bytes, pinned, created_at)
+     VALUES (?, 's:外伝', NULL, 'ndl', 'gaiden.jpg', 1, 1, '2026-01-01')`
   ).run(id);
-  const first = db.raw.prepare('SELECT id FROM covers WHERE series_id = ? AND volume_no = 1').get(id) as { id: number };
-  const d2 = getSeriesDetail(db, id)!;
-  const bundle2 = d2.volumes.find((v) => v.volumeFrom === 1 && v.volumeTo === 6)!;
-  assert.equal(bundle2.coverUrl, `/api/covers/${first.id}?v=v1`);
+  const after = getSeriesDetail(db, id)!.side.find((x) => x.label === '外伝')!;
+  assert.ok(after.coverUrl);
+  assert.equal(after.coverPinned, true);
 });
 
 test('表紙を差し替えたら URL も変わる', () => {
@@ -358,13 +398,13 @@ test('表紙を差し替えたら URL も変わる', () => {
   // 焼いた絵の名前 (中身のハッシュ) を後ろに付けて、絵が変わった時だけ URL を変える
   const id = seed('[芝村裕吏×キムラダイスケ] マージナル・オペレーション', 'マージナル・オペレーション', '芝村裕吏×キムラダイスケ', [[1, 1, '巻']]);
   db.raw.prepare(
-    `INSERT INTO covers (series_id, volume_no, provider, file, bytes, created_at)
-     VALUES (?, 1, 'ndl', 'aaaaaaaaaaaaaaaa.jpg', 1, '2026-01-01')`
+    `INSERT INTO covers (series_id, slot, volume_no, provider, file, bytes, created_at)
+     VALUES (?, 'v:巻:1', 1, 'ndl', 'aaaaaaaaaaaaaaaa.jpg', 1, '2026-01-01')`
   ).run(id);
   const before = getSeriesDetail(db, id)!.volumes[0].coverUrl;
 
   // 人が選び直した時と同じ形。行はそのままで焼いた絵だけが入れ替わる
-  db.raw.prepare("UPDATE covers SET file = 'bbbbbbbbbbbbbbbb.jpg', pinned = 1 WHERE series_id = ? AND volume_no = 1").run(id);
+  db.raw.prepare("UPDATE covers SET file = 'bbbbbbbbbbbbbbbb.jpg', pinned = 1 WHERE series_id = ? AND slot = 'v:巻:1'").run(id);
   const after = getSeriesDetail(db, id)!.volumes[0].coverUrl;
 
   assert.notEqual(after, before, '絵が変わったら URL も変わる');

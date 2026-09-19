@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Config } from '../config.js';
+import { SERIES_SLOT, slotKey, slotVolumeNo, type CoverSlot } from '../cover-slot.js';
 import type { Db } from '../db.js';
 import { fetchBinary } from './cache.js';
 import {
@@ -103,7 +104,8 @@ export async function fetchAndBurn(cfg: Config, provider: string, url: string): 
 
 export interface WriteCoverInput {
   seriesId: number;
-  volumeNo: number | null;
+  /** どの板に貼るか。代表・単巻・合本・別巻を同じ形で名指しする (src/cover-slot.ts) */
+  slot: CoverSlot;
   provider: string;
   sourceUrl: string | null;
   isbn: string | null;
@@ -121,30 +123,46 @@ export interface WriteCoverInput {
 /**
  * covers に 1 行置く。画像は既に焼いてある前提。
  *
- * **代表表紙 (volumeNo === null) は衝突の宛先が違う。** SQLite は一意制約の中で
- * NULL 同士を別物として扱うので、`UNIQUE(series_id, volume_no)` は代表を縛れない。
- * 縛れないと ON CONFLICT が一度も当たらず、取り直すたびに行が増えて、
- * 読む側が拾う一番古い行 — **一番最初に貼った絵** — が棚に残り続ける。
- * 下の pinned の守りも、衝突しない以上は一度も効かない。
- * 代表だけ部分索引 (db.ts の covers_series_cover) を名指しする。
+ * **宛先は板ごとに 1 本** (`UNIQUE(series_id, slot)`)。代表も単巻も合本も別巻も
+ * 同じ ON CONFLICT に落ちる。以前は代表だけ宛先が違った — SQLite は一意制約の中で
+ * NULL 同士を別物として扱うので `UNIQUE(series_id, volume_no)` が代表を縛れず、
+ * ON CONFLICT が一度も当たらないまま取り直すたびに行が増えて、読む側が拾う
+ * 一番古い行 — **一番最初に貼った絵** — が棚に残り続けていた (db.ts の移行の註)。
  */
 export function writeCover(db: Db, input: WriteCoverInput): void {
   const pinned = input.pinned ? 1 : 0;
-  const target = input.volumeNo === null ? '(series_id) WHERE volume_no IS NULL' : '(series_id, volume_no)';
   db.raw
     .prepare(
-      `INSERT INTO covers (series_id, volume_no, provider, source_url, isbn, file, bytes, content_type, pinned, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT ${target} DO UPDATE SET
+      `INSERT INTO covers (series_id, slot, volume_no, provider, source_url, isbn, file, bytes, content_type, pinned, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (series_id, slot) DO UPDATE SET
+         volume_no = excluded.volume_no,
          provider = excluded.provider, source_url = excluded.source_url, isbn = excluded.isbn,
          file = excluded.file, bytes = excluded.bytes, content_type = excluded.content_type,
          pinned = excluded.pinned, created_at = excluded.created_at
        WHERE covers.pinned = 0 OR excluded.pinned = 1`
     )
     .run(
-      input.seriesId, input.volumeNo, input.provider, input.sourceUrl, input.isbn,
+      input.seriesId, slotKey(input.slot), slotVolumeNo(input.slot),
+      input.provider, input.sourceUrl, input.isbn,
       input.burned.file, input.burned.bytes, input.burned.contentType, pinned, new Date().toISOString()
     );
+}
+
+/** その板の絵を人が選んでいるか。**立っていれば自動の巡回は手を出さない** */
+export function coverPinnedAt(db: Db, seriesId: number, slot: CoverSlot): boolean {
+  return Boolean(
+    db.raw
+      .prepare('SELECT 1 FROM covers WHERE series_id = ? AND slot = ? AND pinned = 1')
+      .get(seriesId, slotKey(slot))
+  );
+}
+
+/** その板に絵が貼ってあるか (人が選んだかどうかは見ない) */
+export function hasCoverAt(db: Db, seriesId: number, slot: CoverSlot): boolean {
+  return Boolean(
+    db.raw.prepare('SELECT 1 FROM covers WHERE series_id = ? AND slot = ?').get(seriesId, slotKey(slot))
+  );
 }
 
 /**
@@ -169,7 +187,7 @@ export async function fetchCover(
   db: Db,
   cfg: Config,
   seriesId: number,
-  volumeNo: number | null,
+  slot: CoverSlot,
   isbn: string,
   opts: {
     skipNdl?: boolean;
@@ -201,7 +219,7 @@ export async function fetchCover(
     const burned = await fetchAndBurn(cfg, bucket, imageUrl);
     if (!burned) return false;
     writeCover(db, {
-      seriesId, volumeNo, provider, sourceUrl: imageUrl, isbn: recIsbn ?? isbn, burned,
+      seriesId, slot, provider, sourceUrl: imageUrl, isbn: recIsbn ?? isbn, burned,
     });
     return true;
   };
@@ -242,6 +260,13 @@ export async function fetchCover(
    * どちらも刷り直した版・電子版の書影が付くことがあるので、手元の本と絵が違いうる。
    * provider を分けて後から見分けられるようにしておく。
    */
+  /**
+   * **番号の付いた 1 巻の板だけがこの道に入る。** 楽天も Google も書名に巻数を添えて
+   * 引き当てる作りなので、番号の無い板 — 代表表紙、合本 (第01-02巻)、別巻 (外伝) — では
+   * 何を渡しても当たらないか、**別の巻の絵を掴む**。そちらは ISBN で取れなければ
+   * 取れないまま返す (人が「サムネ変更」で選べる)。
+   */
+  const volumeNo = slot.kind === 'volume' && slot.from === slot.to ? slot.from : null;
   const s = volumeNo === null ? null : db.getSeries(seriesId);
   if (s && volumeNo !== null) {
     const title = opts.titleForFallback ?? s.title;
@@ -324,22 +349,29 @@ export async function cacheThumbnail(
  * 後から若い巻の表紙が埋まった時にここを呼ばないと、棚には**ずっと 6 巻の表紙**が
  * 並んだままになる。
  *
+ * **番号を持つ板だけを見る** (`volume_no IS NOT NULL` = 単巻と合本)。別巻は数直線に
+ * 乗らないので、外伝の絵が作品の顔になると棚で作品を見分けられなくなる。
+ * 合本は入れる — 全部が合本の作品では、そこにしか絵が無い。
+ *
+ * 同じ番号に単巻と合本が並んだら単巻を採る (`ORDER BY slot` で `v:巻:1` が
+ * `v:巻:1-2` より先に来る)。第01巻そのものの絵の方が作品の顔として素直。
+ *
  * **人が代表表紙そのものを選んでいたら触らない** (pinned)。
  */
 export function refreshSeriesCover(db: Db, seriesId: number): void {
-  const pinned = db.raw
-    .prepare('SELECT 1 FROM covers WHERE series_id = ? AND volume_no IS NULL AND pinned = 1')
-    .get(seriesId);
-  if (pinned) return;
+  if (coverPinnedAt(db, seriesId, SERIES_SLOT)) return;
 
   const first = db.raw
-    .prepare('SELECT * FROM covers WHERE series_id = ? AND volume_no IS NOT NULL ORDER BY volume_no LIMIT 1')
+    .prepare(
+      `SELECT * FROM covers WHERE series_id = ? AND volume_no IS NOT NULL
+        ORDER BY volume_no, slot, id LIMIT 1`
+    )
     .get(seriesId) as Record<string, unknown> | undefined;
   if (!first) return;
 
   writeCover(db, {
     seriesId,
-    volumeNo: null,
+    slot: SERIES_SLOT,
     provider: String(first.provider),
     sourceUrl: (first.source_url as string | null) ?? null,
     isbn: (first.isbn as string | null) ?? null,

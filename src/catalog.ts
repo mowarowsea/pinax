@@ -1,3 +1,6 @@
+import {
+  SERIES_SLOT, sideSlot, slotKey, slotLabel, volumeSlot, type CoverSlot,
+} from './cover-slot.js';
 import { completedOf, type Db, type SeriesPick, type SeriesRow, type VolumeRow } from './db.js';
 import { parseFilename, seriesLabel } from './naming.js';
 import { parseItem, seriesKeyOf } from './volume.js';
@@ -246,7 +249,7 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
     params.push(like, like, `%${seriesKeyOf(opts.q)}%`);
   }
   if (opts.needsCover) {
-    where.push('NOT EXISTS (SELECT 1 FROM covers c WHERE c.series_id = s.id AND c.volume_no IS NULL)');
+    where.push("NOT EXISTS (SELECT 1 FROM covers c WHERE c.series_id = s.id AND c.slot = '')");
   }
   if (opts.issues) {
     // **SQL 側で絞る。** gapsOnly のように後から篩うと total とページの中身が食い違う
@@ -279,8 +282,8 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
               ${looseFilesSql('s.id')} AS loose,
               ${dupVolumesSql('s.id')} AS dup_volumes,
               ${dupFilesSql('s.id')} AS dup_files,
-              (SELECT c.id FROM covers c WHERE c.series_id = s.id AND c.volume_no IS NULL) AS cover_id,
-              (SELECT c.file FROM covers c WHERE c.series_id = s.id AND c.volume_no IS NULL) AS cover_file,
+              (SELECT c.id FROM covers c WHERE c.series_id = s.id AND c.slot = '') AS cover_id,
+              (SELECT c.file FROM covers c WHERE c.series_id = s.id AND c.slot = '') AS cover_file,
               COALESCE(${volumeAddedAtSql('s.id')}, s.first_seen_at) AS volume_added_at
          FROM series s ${clause}
         ORDER BY ${order} LIMIT ? OFFSET ?`
@@ -332,10 +335,18 @@ export interface VolumeDetail {
   volumeTo: number;
   unit: string;
   label: string;
+  /**
+   * 表紙の宛先 (src/cover-slot.ts)。**画面はこれをそのまま送り返して絵を差し替える** —
+   * 宛先の綴り方を画面にも持たせると、片方だけ直した時に二度と繋がらない
+   */
+  coverSlot: string;
   completed: boolean;
   present: boolean;
   coverUrl: string | null;
-  /** その表紙を人が選んだか。**自動の取り直しでは上書きされない** 印 */
+  /**
+   * その表紙を人が選んだか。**自動の取り直しでは上書きされない** 印。
+   * 借りてきた絵 (合本が第01巻から借りる時) では立たない
+   */
   coverPinned: boolean;
   /**
    * この巻に別々のファイルが 2 本以上ぶら下がっている。分割書庫の続きは数えない。
@@ -384,6 +395,15 @@ export interface SeriesDetail extends SeriesSummary {
 export interface SideVolume {
   /** 作品の中での呼び名。**空なら作品そのもの** (1 冊で完結している作品) */
   label: string;
+  /** 表紙の宛先 (VolumeDetail.coverSlot と同じ立場) */
+  coverSlot: string;
+  /**
+   * 板に出す絵。呼び名のある別巻は書誌から自動で取りに行き (bib/paste.ts)、
+   * **呼び名が空のものは作品の代表表紙を借りる**
+   */
+  coverUrl: string | null;
+  /** その表紙を人が選んだか。借りてきた絵では立たない */
+  coverPinned: boolean;
   files: VolumeDetail['files'];
 }
 
@@ -415,32 +435,53 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
   });
 
   const covers = db.raw
-    .prepare('SELECT id, volume_no, pinned, file FROM covers WHERE series_id = ?')
-    .all(id) as { id: number; volume_no: number | null; pinned: number; file: string }[];
-  const coverByVol = new Map(
-    covers.filter((c) => c.volume_no !== null).map((c) => [Number(c.volume_no), c])
-  );
+    .prepare('SELECT id, slot, pinned, file FROM covers WHERE series_id = ?')
+    .all(id) as { id: number; slot: string; pinned: number; file: string }[];
+  const coverBySlot = new Map(covers.map((c) => [String(c.slot), c]));
+
+  type Cover = { id: number; pinned: number; file: string };
+  const coverAt = (slot: CoverSlot): Cover | undefined => coverBySlot.get(slotKey(slot));
+  /** 他の板から絵だけ借りる。**「選」の印は連れてこない** (下の coverFor) */
+  const borrow = (slot: CoverSlot): Cover | undefined => {
+    const c = coverAt(slot);
+    return c ? { ...c, pinned: 0 } : undefined;
+  };
 
   /**
    * その巻の板に出す表紙。
    *
-   * **合本 (第01-06巻) には、覆う巻のうちいちばん若い巻の絵を出す。** 板は 1 枚しか
+   * **合本 (第01-06巻) には、覆う巻のうちいちばん若い巻の絵を借りて出す。** 板は 1 枚しか
    * 置けないので、第01-06巻なら第01巻の絵が素直。単巻に限って空にしていたが、
    * それだと合本でしか持っていない巻が棚でも中でも絵無しのまま残る (手元で 799 冊)。
    *
-   * ただし「選」の印は合本には立てない。あれは**この巻の表紙を選び直した**印で、
-   * 選び直せるのは単巻だけ (下の single)。合本に出すと外し方の無い印になる。
+   * ただし**合本じしんの絵があればそちらが勝つ。** 合本は別に刷られた 1 冊で、
+   * 表紙も別物。人が「サムネ変更」で選んだ時にだけそこに絵が載る
+   * (自動では取りに行かない — 借りて出せば足りるものを二度焼くことになる)。
+   *
+   * 「選」の印は**自分の板の絵にだけ**立てる。借りてきた絵に立てると、
+   * 押しても外れない印になる。
    */
-  const coverFor = (
-    v: { volumeFrom: number; volumeTo: number }
-  ): { id: number; pinned: number; file: string } | undefined => {
-    if (v.volumeFrom === v.volumeTo) return coverByVol.get(v.volumeFrom);
+  const coverFor = (v: { volumeFrom: number; volumeTo: number; unit: string }): Cover | undefined => {
+    const own = coverAt(volumeSlot(v.volumeFrom, v.volumeTo, v.unit));
+    if (own) return own;
+    if (v.volumeFrom === v.volumeTo) return undefined;
     for (let i = v.volumeFrom; i <= v.volumeTo; i++) {
-      const c = coverByVol.get(i);
-      if (c) return { ...c, pinned: 0 };
+      const c = borrow(volumeSlot(i, i, v.unit));
+      if (c) return c;
     }
     return undefined;
   };
+
+  /**
+   * 別巻の板に出す表紙。
+   *
+   * **呼び名が空のものは作品の代表表紙を借りる。** 呼び名が空なのは
+   * 「1 冊で完結している作品そのもの」で、代表表紙はまさにその本の絵になっている
+   * (RAIDEN-18 の「本編」が無地のままだったのがこれ)。呼び名のある外伝は借りない —
+   * 作品の顔を外伝の板に出すと、持っていない本の絵が並ぶ。
+   */
+  const sideCoverFor = (label: string): Cover | undefined =>
+    coverAt(sideSlot(label)) ?? (label === '' ? borrow(SERIES_SLOT) : undefined);
 
   /**
    * **棚から消えた巻は板ごと落とす。** markGone は行を消さずに present を倒すだけなので、
@@ -448,6 +489,7 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
    * 既に present で切っているので、ここだけが消えた巻を出していた。
    */
   const details: VolumeDetail[] = volumes.filter((v) => v.present).map((v) => {
+    const slot = volumeSlot(v.volumeFrom, v.volumeTo, v.unit);
     const cover = coverFor(v);
     const mine = fileRows.filter((r) => Number(r.volume_id) === v.id);
     return {
@@ -455,9 +497,8 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
       volumeFrom: v.volumeFrom,
       volumeTo: v.volumeTo,
       unit: v.unit,
-      label: v.volumeFrom === v.volumeTo
-        ? `第${String(v.volumeFrom).padStart(2, '0')}${v.unit}`
-        : `第${String(v.volumeFrom).padStart(2, '0')}-${String(v.volumeTo).padStart(2, '0')}${v.unit}`,
+      label: slotLabel(slot),
+      coverSlot: slotKey(slot),
       completed: v.completed,
       present: v.present,
       coverUrl: cover ? coverUrlOf(cover.id, cover.file) : null,
@@ -478,7 +519,16 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
     sideBy.set(key, acc);
   }
   const side: SideVolume[] = [...sideBy]
-    .map(([label, files]) => ({ label, files }))
+    .map(([label, files]) => {
+      const cover = sideCoverFor(label);
+      return {
+        label,
+        coverSlot: slotKey(sideSlot(label)),
+        coverUrl: cover ? coverUrlOf(cover.id, cover.file) : null,
+        coverPinned: Number(cover?.pinned ?? 0) === 1,
+        files,
+      };
+    })
     .sort((a, b) => (a.label ? 1 : 0) - (b.label ? 1 : 0) || a.label.localeCompare(b.label, 'ja'));
 
   const bibRow = db.raw
@@ -505,7 +555,7 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
     )
     .get(s.id) as unknown as CountRow;
   const cover = db.raw
-    .prepare('SELECT id, file FROM covers WHERE series_id = ? AND volume_no IS NULL')
+    .prepare("SELECT id, file FROM covers WHERE series_id = ? AND slot = ''")
     .get(s.id) as { id: number; file: string } | undefined;
   const added = db.raw
     .prepare(`SELECT ${volumeAddedAtSql('?')} AS at`)
