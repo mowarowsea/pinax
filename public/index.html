@@ -178,14 +178,11 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .vol { display: flex; flex-direction: column; gap: 5px; }
 .vol .cover { aspect-ratio: 2/3; }
 .vol .lbl { font-size: 11.5px; font-weight: 600; text-align: center; }
-.vol .sz { font-size: 10px; color: var(--ink-3); text-align: center; }
-.vol .dl { font-size: 11px; text-align: center; border: 1px solid var(--line); border-radius: 5px; padding: 3px; text-decoration: none; color: var(--ink-2); display: block; }
-.vol .dl:hover { border-color: var(--brand); color: var(--brand); }
-.vol.missing .cover { background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--line) 6px, var(--line) 7px); box-shadow: none; border: 1px dashed var(--gap); }
+.vol .th { font-family: inherit; font-size: 11px; text-align: center; border: 1px solid var(--line); background: transparent; border-radius: 5px; padding: 3px; color: var(--ink-2); display: block; width: 100%; cursor: pointer; }
+.vol .th:hover { border-color: var(--brand); color: var(--brand); }
+/* 持っていない巻。**欠番と未購入を分けない** (出ているのに無い、が分かれば足りる) */
+.vol.missing .cover { background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--gap) 6px, var(--gap) 7px); box-shadow: none; border: 1px dashed var(--gap); }
 .vol.missing .lbl { color: var(--gap); }
-/* 手元の最大巻より先に出ている巻。欠番 (持っている範囲の中の穴) とは別色にする */
-.vol.ahead .cover { background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--brand-soft) 6px, var(--brand-soft) 7px); box-shadow: none; border: 1px dashed var(--brand); }
-.vol.ahead .lbl { color: var(--brand); }
 .shelfline { margin: 10px 0 0; padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; background: var(--brand-soft); color: var(--brand); }
 .shelfline.quiet { background: transparent; border: 1px solid var(--line); color: var(--ink-3); font-weight: 500; }
 .shelfline small { display: block; font-weight: 400; font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
@@ -337,6 +334,70 @@ button.cover { border: 0; padding: 0; font: inherit; }
 .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ---- 読む ----
+ *
+ * 板 (.sheet) とは別に、画面を丸ごと覆う。読んでいる間は紙だけが見えていてほしいので、
+ * ヘッダも背景も残さない。
+ *
+ * **明るいテーマでも背景は黒に近い色。** 漫画のページは端まで白いことが多く、
+ * 明るい地に置くと紙の縁が溶けてどこまでが絵か分からなくなる
+ */
+#rd[hidden] { display: none; }
+.rd {
+  position: fixed; inset: 0; z-index: 60; background: #15120f;
+  display: flex; align-items: center; justify-content: center;
+  /* 端末の丸みとホームバーを避ける。スマホで下端の帯が指の届かない所に来ないように */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+.rd-stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+/* 縦読みは stage そのものが巻物になる。横読みは 1 枚だけ置く */
+.rd-stage.vert { display: block; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
+.rd-stage.vert .rd-page { width: 100%; }
+.rd-stage img { display: block; }
+/* **直下の絵だけ。** 割った半分の中の絵は 2 倍幅で置くので、ここで詰めてはいけない */
+.rd-stage.rtl > img { max-width: 100%; max-height: 100vh; object-fit: contain; margin: auto; }
+
+/**
+ * 横長のページを真ん中で割る。**絵は触らない。**
+ * 同じ画像を 2 回出して、窓の方を半分にしてずらすだけなので、
+ * 元のファイルにも、焼いた表紙にも手を入れずに済む。
+ *
+ * 縦読みは段の幅が決まっているので割合で書ける。右から左は「画面に収まる
+ * いちばん大きい半分」を出す必要があり、**そこだけ JS が px で寸法を入れる**
+ * (aspect-ratio と max-width を組み合わせると、詰まった時に高さが付いて来ず
+ *  半分より狭い窓になって絵が切れる)
+ */
+.rd-half { overflow: hidden; margin: auto; }
+.rd-half img { display: block; max-width: none; max-height: none; }
+.rd-stage.vert .rd-half { width: 100%; }
+.rd-stage.vert .rd-half img { width: 200%; }
+.rd-stage.vert .rd-half.right img { margin-left: -100%; }
+
+/* touch-action: manipulation で二度押し拡大の待ち時間を消す (めくりが 300ms 遅れる) */
+.rd-hit { position: absolute; inset: 0; display: flex; touch-action: manipulation; }
+.rd-hit > div { height: 100%; }
+/* 絵を掴ませない。**掴むと pointercancel が飛んでスワイプが死ぬ** (PC で踏んだ) */
+.rd img { user-select: none; -webkit-user-drag: none; }
+.rd-msg { color: var(--ink-3); font-size: 13px; text-align: center; line-height: 1.9; padding: 0 28px; }
+.rd-msg b { display: block; color: #ece6e1; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+
+/* 下端の帯。2.5 秒で消える。**消えている間も場所は取り続ける** (位置がずれない) */
+.rd-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+  background: rgba(21, 18, 15, .94); border-top: 1px solid #3a322c;
+  padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
+  transition: opacity .22s;
+}
+.rd-bar[data-off="1"] { opacity: 0; pointer-events: none; }
+.rd-row { display: flex; align-items: center; gap: 8px; }
+.rd-b {
+  font-family: inherit; font-size: 12px; color: #ece6e1; background: transparent;
+  border: 1px solid #4a403a; border-radius: 7px; padding: 7px 12px; cursor: pointer;
+}
+.rd-b:hover { border-color: #867c77; }
+.rd-no { font-size: 12px; color: #b5aba5; font-variant-numeric: tabular-nums; }
+.rd-bar input[type=range] { width: 100%; margin: 0 0 8px; accent-color: var(--brand); }
+
 /* ---- スマホ ----
    詳細は下から生える板。上を 12dvh ほど空けて地の画面を残す (何かの上に乗っていると分かる)。
    dvh はアドレスバーの伸縮に追従する — vh だけだと板の底がバーの裏に隠れて × に指が届かない */
@@ -433,6 +494,23 @@ button.cover { border: 0; padding: 0; font: inherit; }
       <button class="close" id="sheet-close" aria-label="閉じる">&times;</button>
     </div>
     <div class="sheet-body" id="detail"></div>
+  </div>
+</div>
+
+<!-- 読む。板の上にさらに重ねるので、閉じても下の詳細はそのまま残る -->
+<div class="rd" id="rd" hidden>
+  <div class="rd-stage" id="rd-stage"></div>
+  <div class="rd-hit" id="rd-hit">
+    <div data-hit="next" style="width:30%"></div><div data-hit="ui" style="width:40%"></div><div data-hit="prev" style="width:30%"></div>
+  </div>
+  <div class="rd-bar" id="rd-bar">
+    <input type="range" id="rd-slider" min="1" max="1" value="1" aria-label="ページ">
+    <div class="rd-row">
+      <button class="rd-b" id="rd-close">閉じる</button>
+      <button class="rd-b" id="rd-mode">縦読み</button>
+      <span style="flex:1"></span>
+      <span class="rd-no" id="rd-no"></span>
+    </div>
   </div>
 </div>
 
@@ -551,61 +629,71 @@ async function loadGrid() {
  * どちらも「持っている本」で、数直線に乗るかどうかしか違わない。
  * 片方をファイルの一覧で出すと、外伝だけ格下の置き場にあるように見える。
  *
- * 表紙の所だけ呼ぶ側から渡す — 巻は押して選び直せるが、別巻は押せない (下記)
+ * **表紙を押すと読み始める。** 表紙は本そのものの絵なので、押して開くのがいちばん
+ * 素直な入口。表紙の差し替えはその下のボタンへ回した (以前は逆だった)。
+ *
+ * サイズも保存も出さない。落とすのは下のファイル一覧から今まで通りできるし、
+ * 読めるようになった今、板の上で要るのは**開く口と、絵を直す口**だけ。
  */
-function volCardHtml(cover, label, files, cls = '') {
-  const f = files[0];
-  const size = files.reduce((n, x) => n + x.size, 0);
+function volCardHtml(cover, label, files, opts = {}) {
   const tags = files.flatMap((x) => x.tags);
-  // 分割書庫は 1 枚に畳んである。押せる口は先頭だけなので、何本あるかを添える
-  const dl = files.length === 1
-    ? `<a class="dl" href="/api/files/${f.id}/download">保存</a>`
-    : `<a class="dl" href="/api/files/${f.id}/download">保存 (1/${files.length})</a>`;
-  return `<div class="vol${cls}">
+  return `<div class="vol${opts.cls ?? ''}">
     ${cover}
     <span class="lbl">${esc(label)}${tags.length ? ' ' + esc(tags.join(',')) : ''}</span>
-    <span class="sz">${mb(size)}</span>
-    ${dl}
+    ${opts.pick === undefined ? '' : `<button class="th" data-cover-vol="${opts.pick}">サムネ変更</button>`}
   </div>`;
 }
+
+/**
+ * 表紙を「読む」入口にする。**分割書庫は先頭だけを開く** — 1 巻が 3 本に割れている時、
+ * 中身は 1 冊分なので先頭を読めば足りる (続きが別の本に入っているものは実物に無い)
+ */
+const readCover = (files, inner, label) =>
+  files.length
+    ? `<button class="cover read" data-read="${files[0].id}" title="${esc(label)}を読む">${inner}</button>`
+    : `<span class="cover">${inner}</span>`;
 
 function volHtml(v) {
   const marks = [];
   if (v.duplicate) marks.push('<span class="badge warn">複</span>');
   if (v.coverPinned) marks.push('<span class="badge pinned">選</span>');
   if (v.completed) marks.push('<span class="badge done">完</span>');
-  // 単巻なら表紙そのものが「選び直す」の入口。合本 (範囲もの) は 1 巻に結び付かないので押せない
+  // 表紙を選び直せるのは単巻だけ。合本 (範囲もの) は 1 巻に結び付かないので出さない
   const single = v.volumeFrom === v.volumeTo;
   const inner = `${coverHtml(v.coverUrl, v.label)}
       ${marks.length ? `<span class="badges">${marks.join('')}</span>` : ''}`;
-  const cover = single
-    ? `<button class="cover" data-cover-vol="${v.volumeFrom}" title="この巻の表紙を選び直す">${inner}</button>`
-    : `<span class="cover">${inner}</span>`;
-  return volCardHtml(cover, v.label, v.files, v.duplicate ? ' dup' : '');
+  return volCardHtml(readCover(v.files, inner, v.label), v.label, v.files, {
+    cls: v.duplicate ? ' dup' : '',
+    pick: single ? v.volumeFrom : undefined,
+  });
 }
 
 /**
  * 別巻 1 点の板。呼び名が空のものは作品そのものなので「本編」と書く。
  *
- * **表紙は出ない。** 書影は巻数で引いていて (covers.volume_no)、別巻には番号が無い。
- * 押しても選び直す先が無いので、巻と違って button にはしない —
- * 押せる見た目で何も起きないのがいちばん悪い。
+ * **絵は出ないが、押すと読める。** 書影は巻数で引いていて (covers.volume_no)、
+ * 別巻には番号が無いので差し替える先も無い。だがファイルはあるので開ける。
  *
- * 絵の代わりの文字も入れない。巻の板は表紙が無い時に巻数を書くが、あれは
+ * 絵の代わりの文字は入れない。巻の板は表紙が無い時に巻数を書くが、あれは
  * 滅多に出ない状態で、別巻は**必ず絵が無い**。呼び名はすぐ下に出ているので、
  * 入れると「「メガドライブ ミニ」発売記念特別編」が毎回二度書きになる
  */
 function sideVolHtml(s) {
   const label = s.label || '本編';
-  return volCardHtml('<span class="cover"></span>', label, s.files);
+  return volCardHtml(readCover(s.files, '', label), label, s.files);
 }
 
-function missingVolHtml(n, unit, kind) {
-  // kind: 'gap' = 持っている範囲の中の穴 / 'ahead' = 手元の最大巻より先に出ている巻
-  return `<div class="vol missing ${kind === 'ahead' ? 'ahead' : ''}">
+/**
+ * 持っていない巻。**欠番と未購入を分けない。**
+ *
+ * 以前は「持っている範囲の穴」と「その先に出ている巻」を色と文字で分けていたが、
+ * 見る側が知りたいのは「出ているのに持っていない」ことだけで、
+ * それがどちらの理由かは要らない (本人の指定、2026-09-19)。
+ */
+function missingVolHtml(n, unit) {
+  return `<div class="vol missing">
     <span class="cover"></span>
     <span class="lbl">第${String(n).padStart(2, '0')}${unit}</span>
-    <span class="sz">${kind === 'ahead' ? '未購入' : '未所持'}</span>
   </div>`;
 }
 
@@ -675,9 +763,9 @@ function detailHtml(d) {
       if (v) { line.push(volHtml(v)); placed.add(v.id); continue; }
       // 合本の中の番号。その巻は下で合本 1 枚として出るので、ここでは欠番にしない
       if (d.volumes.some((x) => x.unit === main.unit && x.volumeFrom <= i && x.volumeTo >= i)) continue;
-      // 手元の最大巻より先は「未購入」。書誌が知らない番号は出さない (あるとは限らない)
-      if (i > main.max) { if (knownSet.has(i)) line.push(missingVolHtml(i, main.unit, 'ahead')); }
-      else line.push(missingVolHtml(i, main.unit, 'gap'));
+      // 手元の最大巻より先は、**書誌が知っている番号だけ**出す (あるとは限らない)
+      if (i > main.max) { if (knownSet.has(i)) line.push(missingVolHtml(i, main.unit)); }
+      else line.push(missingVolHtml(i, main.unit));
     }
     // 数直線に乗らなかった巻を後ろに足す — 合本 (第01-02巻) と、
     // 別単位の巻 (巻で数える作品に 1 つだけ混ざった「第224話」など)。
@@ -713,7 +801,7 @@ function detailHtml(d) {
       ${renameBoxHtml(d)}
     </div>
   </div>
-  ${d.volumes.length ? `<h3 class="sec">巻 <span style="font-weight:400">— 表紙を押すとその巻だけ選び直せます</span></h3>
+  ${d.volumes.length ? `<h3 class="sec">巻 <span style="font-weight:400">— 表紙を押すと読み始めます</span></h3>
   <div class="vols">${line.join('')}</div>` : ''}
   ${sideSectionHtml(d)}
   ${dupSectionHtml(d)}
@@ -954,6 +1042,11 @@ function wireDetail(d) {
   $('pick-open')?.addEventListener('click', () => openPicker(null));
   $('detail').querySelectorAll('button[data-cover-vol]').forEach((b) => {
     b.addEventListener('click', () => openPicker(Number(b.dataset.coverVol)));
+  });
+
+  // 表紙を押したら読み始める
+  $('detail').querySelectorAll('button[data-read]').forEach((b) => {
+    b.addEventListener('click', () => openReader(Number(b.dataset.read)));
   });
 
   // 選んだシリーズを外して自動へ戻す。**表紙はそのまま残す** — 次の取り直しで貼り替わる
@@ -1548,6 +1641,344 @@ function wireNamerResults() {
   });
 }
 
+// ---- 読む ---------------------------------------------------------------
+
+/**
+ * 書庫を開いてページをめくる。**絵は 1 枚ずつサーバーから貰うだけ。**
+ *
+ * サーバーは読んでいる場所を覚えない。どこまで読んだかはこの画面と URL
+ * (`#/read/<ファイルid>`) にしか無いので、**何人が同時に読んでも混ざらない。**
+ * 覚えているのは書庫の索引だけで、これは誰が読んでも同じ内容。
+ *
+ * 見開き (横長) のページは**絵を加工せずに**割る。同じ画像を 2 回出して、
+ * 窓の方を半分にしてずらすだけ。元のファイルにも表紙にも触らずに済む上に、
+ * ページ番号も「14 / 175」のまま右半分→左半分と進むので嘘にならない。
+ */
+const RD_MODE_KEY = 'pinax.readMode';
+const RD_AHEAD = 3;
+const RD_BACK = 1;
+
+const reader = {
+  fileId: null,
+  pages: [],
+  page: 0,
+  /** null = 割らない / 1 = 右半分 / 0 = 左半分。**右から先に読む** */
+  half: null,
+  mode: 'rtl',
+  /** 先読みの控え。DOM には入れず、寸法を測るのと通信を先に始めるためだけに持つ */
+  imgs: new Map(),
+  barTimer: null,
+  seq: 0,
+  vertTick: 0,
+};
+
+const readerOpen = () => !$('rd').hidden;
+const rdUrl = (i) => `/api/files/${reader.fileId}/page/${i}`;
+
+/** localStorage は端末ごと。**PC とスマホで別々に覚える**が、それでいい */
+function rdMode() {
+  try { return localStorage.getItem(RD_MODE_KEY) === 'vert' ? 'vert' : 'rtl'; } catch { return 'rtl'; }
+}
+function rdSaveMode(m) {
+  try { localStorage.setItem(RD_MODE_KEY, m); } catch { /* 見られない端末でも読めること自体は困らない */ }
+}
+
+function rdImg(i) {
+  let img = reader.imgs.get(i);
+  if (!img) {
+    img = new Image();
+    img.src = rdUrl(i);
+    reader.imgs.set(i, img);
+  }
+  return img;
+}
+
+/** 前後を先に取っておく。**遠くの控えは捨てる** — 1 冊 200 枚を抱えたままにしない */
+function rdPrefetch() {
+  for (let d = -RD_BACK; d <= RD_AHEAD; d++) {
+    const i = reader.page + d;
+    if (i >= 0 && i < reader.pages.length) rdImg(i);
+  }
+  for (const k of [...reader.imgs.keys()]) {
+    if (k < reader.page - RD_BACK - 2 || k > reader.page + RD_AHEAD + 2) reader.imgs.delete(k);
+  }
+}
+
+const rdWide = (i) => {
+  const img = reader.imgs.get(i);
+  return Boolean(img && img.naturalWidth && img.naturalWidth > img.naturalHeight);
+};
+
+const rdReady = (img) =>
+  img.complete ? Promise.resolve() : new Promise((res) => {
+    img.addEventListener('load', res, { once: true });
+    img.addEventListener('error', res, { once: true });
+  });
+
+/** 縦読み用。段の幅が決まっているので割合で足りる */
+function rdHalfVertHtml(i, side) {
+  const img = rdImg(i);
+  const ar = img.naturalWidth ? `${img.naturalWidth / 2}/${img.naturalHeight}` : '0.7';
+  return `<div class="rd-half ${side ? 'right' : 'left'}" style="aspect-ratio:${ar}">
+    <img src="${rdUrl(i)}" loading="lazy" alt="${i + 1} ページ目"></div>`;
+}
+
+/** 右から左用。画面に収まるいちばん大きい半分を px で出す */
+function rdHalfRtlHtml(i, side) {
+  const img = rdImg(i);
+  const stage = $('rd-stage');
+  const hw = img.naturalWidth / 2;
+  const hh = img.naturalHeight;
+  const scale = Math.min(stage.clientWidth / hw, stage.clientHeight / hh);
+  const w = Math.max(1, Math.round(hw * scale));
+  const h = Math.max(1, Math.round(hh * scale));
+  return `<div class="rd-half" style="width:${w}px;height:${h}px">
+    <img src="${rdUrl(i)}" alt="${i + 1} ページ目"
+      style="width:${w * 2}px;height:${h}px;margin-left:${side ? -w : 0}px"></div>`;
+}
+
+// ---- 右から左 ----
+
+async function rdDrawRtl(dir) {
+  const seq = ++reader.seq;
+  const stage = $('rd-stage');
+  stage.className = 'rd-stage rtl';
+  $('rd-hit').style.display = 'flex';
+  const i = reader.page;
+  const img = rdImg(i);
+  if (!img.complete) stage.innerHTML = '<div class="rd-msg">読み込み中</div>';
+  await rdReady(img);
+  if (seq !== reader.seq || !readerOpen()) return;
+
+  if (rdWide(i)) { if (reader.half === null) reader.half = dir >= 0 ? 1 : 0; }
+  else reader.half = null;
+
+  stage.innerHTML = reader.half === null
+    ? `<img src="${rdUrl(i)}" alt="${i + 1} ページ目">`
+    : rdHalfRtlHtml(i, reader.half);
+  rdMeta();
+  rdPrefetch();
+}
+
+function rdGo(d) {
+  const n = reader.pages.length;
+  if (!n) return;
+  if (d > 0) {
+    if (reader.half === 1) reader.half = 0;
+    else { if (reader.page >= n - 1) return; reader.page++; reader.half = null; }
+  } else {
+    if (reader.half === 0) reader.half = 1;
+    else { if (reader.page <= 0) return; reader.page--; reader.half = null; }
+  }
+  rdDrawRtl(d);
+}
+
+// ---- 縦読み ----
+
+function rdDrawVert() {
+  ++reader.seq;
+  const stage = $('rd-stage');
+  stage.className = 'rd-stage vert';
+  $('rd-hit').style.display = 'none';
+  // 高さが分かる前は仮の比で場所を取っておく。取らないと読み込むたび下が跳ねる
+  stage.innerHTML = reader.pages
+    .map((p, i) => `<div class="rd-page" data-i="${i}"><img src="${rdUrl(i)}" loading="lazy"
+      alt="${i + 1} ページ目" style="width:100%;aspect-ratio:0.7"></div>`)
+    .join('');
+  const at = stage.children[reader.page];
+  if (at) stage.scrollTop = at.offsetTop;
+  rdMeta();
+}
+
+/**
+ * 縦読みでも見開きは割る。**読み込んで初めて横長と分かる**ので、
+ * 載ってから差し替える。画面に入る手前で読む (loading=lazy) ので、
+ * 差し替えはたいてい見えていない所で起きる
+ */
+function rdVertLoaded(e) {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement) || !img.parentElement) return;
+  const box = img.parentElement;
+  if (!box.classList.contains('rd-page')) return;
+  if (img.naturalWidth > img.naturalHeight) {
+    const i = Number(box.dataset.i);
+    reader.imgs.set(i, img);
+    box.innerHTML = rdHalfVertHtml(i, 1) + rdHalfVertHtml(i, 0);
+  } else {
+    img.style.aspectRatio = '';
+  }
+}
+
+function rdVertScroll() {
+  if (reader.vertTick) return;
+  reader.vertTick = requestAnimationFrame(() => {
+    reader.vertTick = 0;
+    const stage = $('rd-stage');
+    const y = stage.scrollTop + 40;
+    for (const kid of stage.children) {
+      if (kid.offsetTop + kid.offsetHeight > y) {
+        const i = Number(kid.dataset.i);
+        if (Number.isInteger(i) && i !== reader.page) { reader.page = i; rdMeta(); }
+        return;
+      }
+    }
+  });
+}
+
+// ---- 共通 ----
+
+function rdMeta() {
+  const n = reader.pages.length;
+  $('rd-no').textContent = n ? `${reader.page + 1} / ${n}` : '';
+  const sl = $('rd-slider');
+  sl.max = String(Math.max(1, n));
+  sl.value = String(reader.page + 1);
+  $('rd-mode').textContent = reader.mode === 'rtl' ? '縦読み' : '右から左';
+}
+
+function rdBar(on) {
+  clearTimeout(reader.barTimer);
+  $('rd-bar').dataset.off = on ? '0' : '1';
+  if (on) reader.barTimer = setTimeout(() => { $('rd-bar').dataset.off = '1'; }, 2500);
+}
+
+function rdDraw(dir = 1) {
+  if (reader.mode === 'vert') rdDrawVert();
+  else rdDrawRtl(dir);
+}
+
+async function openReader(fileId, mode = 'push') {
+  reader.fileId = fileId;
+  reader.pages = [];
+  reader.page = 0;
+  reader.half = null;
+  reader.mode = rdMode();
+  reader.imgs.clear();
+  ++reader.seq;
+
+  $('rd').hidden = false;
+  document.body.style.overflow = 'hidden';
+  if (mode === 'push') history.pushState({ reader: fileId }, '', `#/read/${fileId}`);
+  else if (mode === 'entry') history.replaceState({ reader: fileId, entry: true }, '', `#/read/${fileId}`);
+
+  const stage = $('rd-stage');
+  stage.className = 'rd-stage';
+  $('rd-hit').style.display = 'none';
+  stage.innerHTML = '<div class="rd-msg"><b>書庫を開いています</b>初めて開く本は少し待ちます</div>';
+  rdMeta();
+  rdBar(true);
+
+  try {
+    const r = await api(`/api/files/${fileId}/pages`);
+    if (reader.fileId !== fileId || !readerOpen()) return;
+    reader.pages = r.pages;
+    if (!r.pages.length) {
+      // **黙って空を出さない。** 開かない理由が分からないのが一番困る
+      stage.innerHTML = `<div class="rd-msg"><b>ページがありませんでした</b>${
+        r.nested
+          ? 'この本は中に別の書庫が入っています。先に中身を取り出してください'
+          : '絵が入っていませんでした'}</div>`;
+      return;
+    }
+    rdDraw(1);
+  } catch (e) {
+    if (reader.fileId !== fileId || !readerOpen()) return;
+    stage.innerHTML = `<div class="rd-msg"><b>開けませんでした</b>${esc(e.message)}</div>`;
+  }
+}
+
+function rdHide() {
+  $('rd').hidden = true;
+  ++reader.seq;
+  reader.imgs.clear();
+  $('rd-stage').innerHTML = '';
+  clearTimeout(reader.barTimer);
+  // **板が下に残っているかもしれない。** 残っている時は止めたままにする
+  if (!sheetOpen()) document.body.style.overflow = '';
+}
+
+/** 自分で積んだ履歴は自分で戻す (板の closeSheet と同じ理屈) */
+function closeReader() {
+  const st = history.state;
+  if (st && st.reader && !st.entry) { history.back(); return; }
+  rdHide();
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+}
+
+function rdSetMode(m) {
+  reader.mode = m;
+  reader.half = null;
+  rdSaveMode(m);
+  rdDraw(1);
+  rdBar(true);
+}
+
+(function wireReader() {
+  $('rd-close').addEventListener('click', closeReader);
+  $('rd-mode').addEventListener('click', () => rdSetMode(reader.mode === 'rtl' ? 'vert' : 'rtl'));
+  $('rd-slider').addEventListener('input', () => {
+    reader.page = Math.max(0, Math.min(reader.pages.length - 1, Number($('rd-slider').value) - 1));
+    reader.half = null;
+    if (reader.mode === 'vert') {
+      const at = $('rd-stage').children[reader.page];
+      if (at) $('rd-stage').scrollTop = at.offsetTop;
+      rdMeta();
+    } else rdDrawRtl(1);
+    rdBar(true);
+  });
+
+  /**
+   * 右から左のめくり。**左 30% が次へ** — 右から左へ読むので、進む先は左にある。
+   * スワイプも同じ向きに揃える (左へ払えば次)。真ん中は帯の出し入れ。
+   */
+  // 絵を掴む動き (HTML の drag) が始まると pointerup が来ずに pointercancel になる。
+  // 止めておかないと、絵の上から始めたスワイプだけが効かない
+  $('rd').addEventListener('dragstart', (e) => e.preventDefault());
+
+  let dn = null;
+  $('rd-hit').addEventListener('pointerdown', (e) => { dn = { x: e.clientX, y: e.clientY, t: Date.now() }; });
+  $('rd-hit').addEventListener('pointercancel', () => { dn = null; });
+  $('rd-hit').addEventListener('pointerup', (e) => {
+    if (!dn) return;
+    const dx = e.clientX - dn.x;
+    const dy = e.clientY - dn.y;
+    const d = dn;
+    dn = null;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) { rdGo(dx < 0 ? 1 : -1); return; }
+    if (Math.abs(dx) > 12 || Math.abs(dy) > 12 || Date.now() - d.t > 500) return;
+    const hit = e.target.dataset ? e.target.dataset.hit : null;
+    if (hit === 'next') rdGo(1);
+    else if (hit === 'prev') rdGo(-1);
+    else rdBar($('rd-bar').dataset.off === '1');
+  });
+
+  /**
+   * 縦読みは**どこを押しても帯が出る**。ただし**なぞった時は出さない** —
+   * 読み進めるたびに帯が出ると、指の下が隠れて読めない
+   */
+  let vdn = null;
+  const stage = $('rd-stage');
+  stage.addEventListener('pointerdown', (e) => {
+    if (reader.mode !== 'vert') return;
+    vdn = { y: e.clientY, x: e.clientX, t: Date.now(), s: stage.scrollTop };
+  });
+  stage.addEventListener('pointercancel', () => { vdn = null; });
+  stage.addEventListener('pointerup', (e) => {
+    if (!vdn || reader.mode !== 'vert') { vdn = null; return; }
+    const moved = Math.abs(e.clientY - vdn.y) > 12 || Math.abs(e.clientX - vdn.x) > 12
+      || Math.abs(stage.scrollTop - vdn.s) > 4;
+    if (!moved && Date.now() - vdn.t < 500) rdBar(true);
+    vdn = null;
+  });
+  stage.addEventListener('scroll', () => { if (reader.mode === 'vert') rdVertScroll(); });
+  // 割った半分は px で置いてあるので、画面が回ったら出し直す
+  window.addEventListener('resize', () => {
+    if (readerOpen() && reader.mode === 'rtl' && reader.half !== null) rdDrawRtl(1);
+  });
+  // load は上がってこないので捕まえる側で受ける
+  stage.addEventListener('load', (e) => { if (reader.mode === 'vert') rdVertLoaded(e); }, true);
+})();
+
 // ---- シートの開け閉め ---------------------------------------------------
 
 const sheetOpen = () => !$('sheet').hidden;
@@ -1582,6 +2013,13 @@ function closeSheet() {
 
 // 戻る / 進むで画面と URL を合わせる。**ここが Android の戻るの受け口**
 window.addEventListener('popstate', () => {
+  const r = location.hash.match(/^#\/read\/(\d+)/);
+  if (r) { openReader(Number(r[1]), 'keep'); return; }
+  /**
+   * 読むのを閉じただけ。**下の板は貼り直さない** — 読み終えて戻った時に
+   * 詳細を取り直すと、見ていた所まで巻き戻って何巻から開いたか分からなくなる
+   */
+  if (readerOpen()) { rdHide(); return; }
   const m = location.hash.match(/^#\/series\/(\d+)/);
   if (m) {
     openDetail(Number(m[1]), 'keep').catch((e) => toast('失敗: ' + e.message, 5000));
@@ -1640,7 +2078,12 @@ let pressedOnBackdrop = false;
 $('sheet').addEventListener('pointerdown', (e) => { pressedOnBackdrop = e.target === $('sheet'); });
 $('sheet').addEventListener('click', (e) => { if (pressedOnBackdrop && e.target === $('sheet')) closeSheet(); });
 $('sheet-close').addEventListener('click', closeSheet);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheetOpen()) closeSheet(); });
+// 読んでいる時の Esc は**読むのを閉じる**。板より上に重なっているので先に受ける
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (readerOpen()) closeReader();
+  else if (sheetOpen()) closeSheet();
+});
 
 let qTimer = null;
 $('q').addEventListener('input', (e) => {
@@ -1718,9 +2161,11 @@ $('names').addEventListener('click', () => openNamer());
 (async () => {
   await Promise.all([loadStats(), loadNews(), loadGrid()]);
   const m = location.hash.match(/^#\/series\/(\d+)/);
+  const r = location.hash.match(/^#\/read\/(\d+)/);
   // 入口がここなら積むものが無い。'entry' で置き換えるだけにして、
   // 戻るは素直に pinax の外へ出す (積んでおくと戻るが空振りする)
-  if (m) openDetail(Number(m[1]), 'entry');
+  if (r) openReader(Number(r[1]), 'entry');
+  else if (m) openDetail(Number(m[1]), 'entry');
   else if (location.hash.startsWith('#/names')) openNamer('entry');
 })();
 </script>
