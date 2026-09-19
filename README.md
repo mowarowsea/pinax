@@ -655,10 +655,7 @@ GET    /api/files/:id/pages?refresh=1   書庫の中のページ一覧 (絵は�
 GET    /api/files/:id/page/:i           ページ 1 枚。i は索引の並びの番号
 GET    /api/bib/candidates?q=&author=&provider=
                                         表紙選びと同じ検索を、作品に紐付けずに開いたもの
-GET    /api/names?title=&author=&from=&to=&last=&completed=1
-                                        棚の決まりどおりのフォルダ名とファイル名を組み立てて返す
-                                        **棚も DB も見ない。拡張子は付けない**
-                                        last は (完) を付ける巻。completed=1 はフォルダの (完)
+                                        候補ごとに棚の決まりどおりの第01巻の名前を添える (拡張子なし)
 GET    /api/bib/search?title=&author=   書誌の検索 (キャッシュ越し)
 GET    /api/bib/proxy?url=              許可した提供元への生の中継 (要トークン)
 ```

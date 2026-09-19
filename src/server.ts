@@ -23,7 +23,7 @@ import {
 } from './archive.js';
 import { openInExplorer, resolveInsideRoot, revealAbility } from './reveal.js';
 import { applyRename, planRename, RenameError } from './rename.js';
-import { planFolderName, planVolumeName } from './naming.js';
+import { planVolumeName } from './naming.js';
 import { shelfBusy } from './lock.js';
 
 export class HttpError extends Error {
@@ -521,69 +521,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     };
   });
 
-  // ---- これから付ける名前 -------------------------------------------------
-
-  /**
-   * 棚の決まりどおりのフォルダ名とファイル名を組み立てて返す。**棚を見ない。**
-   *
-   * 手元にあるのに棚へ出てこないファイル — 名前が決まりから外れていて拾えない
-   * ものを、人が付け替えるための紙。拾えないから棚からは直せず (あちらは
-   * `/api/series/:id/rename`、既にある作品を動かす口)、直せないから拾えない、
-   * という堂々巡りを切る。
-   *
-   * **名前を出すだけで、ファイルには一切触らない。**
-   */
-  app.get<{
-    Querystring: {
-      title?: string; author?: string; completed?: string;
-      from?: string; to?: string; last?: string; unit?: string;
-    };
-  }>('/api/names', async (req) => {
-    const title = (req.query.title ?? '').trim();
-    if (!title) throw new HttpError(400, '作品名が要ります');
-    const author = (req.query.author ?? '').trim() || null;
-    const unit = req.query.unit === '話' ? '話' : '巻';
-
-    const num = (v: string | undefined, fallback: number): number => {
-      if (v === undefined || v.trim() === '') return fallback;
-      const n = Number(v);
-      if (!Number.isInteger(n) || n < 0 || n > 9999) throw new HttpError(400, `巻数がおかしい: ${v}`);
-      return n;
-    };
-    const from = num(req.query.from, 1);
-    const to = Math.max(num(req.query.to, from), from);
-    // 最終巻の印は**その巻だけ**に付く。手元に最後まで揃っていない作品でも
-    // フォルダには (完) が付く (棚の実物がそうなっている) ので、指定は別々に取る
-    const last = req.query.last === undefined || req.query.last.trim() === ''
-      ? null
-      : num(req.query.last, 0);
-
-    // 出す本数に上限を置く。こち亀 (201 巻) が入る程度で足りる
-    const MAX = 300;
-    const count = to - from + 1;
-    const stop = count > MAX ? from + MAX - 1 : to;
-
-    const volumes = [];
-    for (let v = from; v <= stop; v++) {
-      const name = planVolumeName(author, title, v, v, { unit, completed: v === last });
-      if (!name) throw new HttpError(400, 'その作品名では名前を作れません');
-      volumes.push({ from: v, to: v, label: `第${String(v).padStart(2, '0')}${unit}`, name });
-    }
-
-    const notes: string[] = [];
-    if (count > MAX) notes.push(`${MAX} 冊までにしました (${count} 冊ぶん指定されています)`);
-    // **並びの外の (完) は黙って落とさない。** 別の作品から欄を引き継いだ時に、
-    // どの巻にも印が付かない理由が画面から読めなくなる
-    if (last !== null && (last < from || last > stop)) {
-      notes.push(`(完) を付ける巻 (第${last}${unit}) が並びの外なので、どれにも付けていません`);
-    }
-
-    return {
-      folder: planFolderName(author, title, req.query.completed === '1'),
-      volumes,
-      note: notes.length ? notes.join(' / ') : null,
-    };
-  });
+  // ---- 外の書誌をそのまま渡す ---------------------------------------------
 
   /**
    * 汎用キャッシュプロキシの窓口。外部 API の応答をそのまま返す。
