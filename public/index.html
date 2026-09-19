@@ -354,20 +354,21 @@ button.cover { border: 0; padding: 0; font: inherit; }
 .rd-stage.rtl > img { max-width: 100%; max-height: 100vh; object-fit: contain; margin: auto; }
 
 /**
- * 横長のページを真ん中で割る。**絵は触らない。**
- * 同じ画像を 2 回出して、窓の方を半分にしてずらすだけなので、
+ * 絵の一部だけを出す窓。**絵は触らない。**
+ * 画像はそのまま置いて、窓の方を狭めてずらすだけなので、
  * 元のファイルにも、焼いた表紙にも手を入れずに済む。
  *
- * 縦読みは段の幅が決まっているので割合で書ける。右から左は「画面に収まる
- * いちばん大きい半分」を出す必要があり、**そこだけ JS が px で寸法を入れる**
+ * 用は 2 つある。**横長のページを真ん中で割る**のと、**端から続く無地の帯を
+ * 削る**の。どちらも「画像の横 [x0, x1] を窓いっぱいに出す」に過ぎないので、
+ * 寸法は JS がインラインで入れる。
+ *
+ * 右から左は「画面に収まるいちばん大きい窓」を px で出す必要がある
  * (aspect-ratio と max-width を組み合わせると、詰まった時に高さが付いて来ず
- *  半分より狭い窓になって絵が切れる)
+ *  窓が狭まって絵が切れる)。縦読みは段の幅が決まっているので割合で足りる
  */
 .rd-half { overflow: hidden; margin: auto; }
 .rd-half img { display: block; max-width: none; max-height: none; }
 .rd-stage.vert .rd-half { width: 100%; }
-.rd-stage.vert .rd-half img { width: 200%; }
-.rd-stage.vert .rd-half.right img { margin-left: -100%; }
 
 /* touch-action: manipulation で二度押し拡大の待ち時間を消す (めくりが 300ms 遅れる) */
 .rd-hit { position: absolute; inset: 0; display: flex; touch-action: manipulation; }
@@ -1527,6 +1528,13 @@ const RD_MODE_KEY = 'pinax.readMode';
 const RD_AHEAD = 3;
 const RD_BACK = 1;
 
+/** 同じ色とみなす幅 (0-255)。JPEG のざらつきを吸う */
+const RD_TOL = 12;
+/** 片側で削ってよい上限。**これが唯一の歯止め** (下の rdMeasure を参照) */
+const RD_TRIM_MAX = 0.2;
+/** 測る時の横の粗さ。端の色が変わる場所が数 px ずれても、読む分には誰も気付かない */
+const RD_TRIM_W = 400;
+
 const reader = {
   fileId: null,
   pages: [],
@@ -1536,6 +1544,8 @@ const reader = {
   mode: 'rtl',
   /** 先読みの控え。DOM には入れず、寸法を測るのと通信を先に始めるためだけに持つ */
   imgs: new Map(),
+  /** i → {x0, x1}。帯を削った後の「絵のある横の範囲」。数字 2 つなので捨てずに持つ */
+  trims: new Map(),
   barTimer: null,
   seq: 0,
   vertTick: 0,
@@ -1575,7 +1585,11 @@ function rdPrefetch() {
 
 const rdWide = (i) => {
   const img = reader.imgs.get(i);
-  return Boolean(img && img.naturalWidth && img.naturalWidth > img.naturalHeight);
+  if (!img || !img.naturalWidth) return false;
+  // **帯を削った後の形で判じる。** 帯のぶんだけ横に太って見えていたページを
+  // 割ってしまうと、縦 1 枚の絵が真っ二つになる
+  const t = rdTrim(i);
+  return t.x1 - t.x0 > img.naturalHeight;
 };
 
 const rdReady = (img) =>
@@ -1584,26 +1598,92 @@ const rdReady = (img) =>
     img.addEventListener('error', res, { once: true });
   });
 
-/** 縦読み用。段の幅が決まっているので割合で足りる */
-function rdHalfVertHtml(i, side) {
-  const img = rdImg(i);
-  const ar = img.naturalWidth ? `${img.naturalWidth / 2}/${img.naturalHeight}` : '0.7';
-  return `<div class="rd-half ${side ? 'right' : 'left'}" style="aspect-ratio:${ar}">
-    <img src="${rdUrl(i)}" loading="lazy" alt="${i + 1} ページ目"></div>`;
+// ---- 端の無地を削る ----
+
+/**
+ * 端から続く無地の帯を測って、**絵のある範囲** `{x0, x1}` を元画像の px で返す。
+ *
+ * 電子書籍ビューアの画面を撮った書庫は、紙面の左右にそのビューアの地の色が
+ * 焼き込まれている。削らないとその帯が画面の幅を食って、絵だけが縮む。
+ *
+ * **色が変わった所で必ず止まる**ので、絵もノンブルも消えない。危ないのは
+ * 「端から端まで一色」のページ (巻頭の白紙、扉の裏) だけで、それは下で弾く。
+ */
+function rdTrim(i) {
+  const hit = reader.trims.get(i);
+  if (hit) return hit;
+  const img = reader.imgs.get(i);
+  if (!img || !img.naturalWidth) return { x0: 0, x1: 0 };
+  let out = { x0: 0, x1: img.naturalWidth };
+  // 絵を読み出せない端末でも、削らなければ今まで通り読める
+  try { out = rdMeasure(img); } catch { /* 削らない */ }
+  reader.trims.set(i, out);
+  return out;
 }
 
-/** 右から左用。画面に収まるいちばん大きい半分を px で出す */
-function rdHalfRtlHtml(i, side) {
+/** 測る紙は 1 枚を使い回す。ページごとに作ると捨てる手間の方が重い */
+let rdCanvas = null;
+
+function rdMeasure(img) {
+  const nw = img.naturalWidth;
+  const nh = img.naturalHeight;
+  const full = { x0: 0, x1: nw };
+  const w = Math.min(RD_TRIM_W, nw);
+  const h = Math.max(1, Math.round(w * nh / nw));
+  if (!rdCanvas) rdCanvas = document.createElement('canvas');
+  const cx = rdCanvas.getContext('2d', { willReadFrequently: true });
+  rdCanvas.width = w;
+  rdCanvas.height = h;
+  cx.drawImage(img, 0, 0, w, h);
+  const d = cx.getImageData(0, 0, w, h).data;
+  // 縦は 48 点だけ見る。全部のピクセルを見ても答えは変わらないのに、時間は桁で増える
+  const ys = [];
+  for (let k = 0; k < 48; k++) ys.push(Math.floor(h * (k + 0.5) / 48));
+  const at = (x) => { const o = (ys[ys.length >> 1] * w + x) * 4; return [d[o], d[o + 1], d[o + 2]]; };
+  const same = (x, c) => ys.every((y) => {
+    const o = (y * w + x) * 4;
+    return Math.abs(d[o] - c[0]) <= RD_TOL
+      && Math.abs(d[o + 1] - c[1]) <= RD_TOL
+      && Math.abs(d[o + 2] - c[2]) <= RD_TOL;
+  });
+  // **端から真ん中まで一色なら、そのページは無地。** 白紙を横へ引き伸ばさない
+  if (same(w >> 1, at(0))) return full;
+  // 片側で削ってよいのはここまで。**見開きの片側が丸ごと空白の回でも、
+  // 見開きの形は崩さない** — 読んでいる途中で紙の大きさが変わる方が目に付く
+  const lim = Math.floor(w * RD_TRIM_MAX);
+  const run = (dir) => {
+    const c = at(dir > 0 ? 0 : w - 1);
+    let n = 0;
+    while (n < lim && same(dir > 0 ? n : w - 1 - n, c)) n++;
+    return n;
+  };
+  const sc = nw / w;
+  const x0 = Math.round(run(1) * sc);
+  const x1 = nw - Math.round(run(-1) * sc);
+  return x1 > x0 ? { x0, x1 } : full;
+}
+
+/** 縦読み用。段の幅が決まっているので割合で足りる */
+function rdWinVertHtml(i, x0, x1) {
+  const img = rdImg(i);
+  const cw = Math.max(1, Math.round(x1 - x0));
+  const pct = (v) => `${(v / cw * 100).toFixed(3)}%`;
+  return `<div class="rd-half" style="aspect-ratio:${cw}/${img.naturalHeight}">
+    <img src="${rdUrl(i)}" loading="lazy" alt="${i + 1} ページ目"
+      style="width:${pct(img.naturalWidth)};margin-left:${pct(-x0)}"></div>`;
+}
+
+/** 右から左用。画面に収まるいちばん大きい窓を px で出す */
+function rdWinRtlHtml(i, x0, x1) {
   const img = rdImg(i);
   const stage = $('rd-stage');
-  const hw = img.naturalWidth / 2;
-  const hh = img.naturalHeight;
-  const scale = Math.min(stage.clientWidth / hw, stage.clientHeight / hh);
-  const w = Math.max(1, Math.round(hw * scale));
-  const h = Math.max(1, Math.round(hh * scale));
+  const cw = Math.max(1, x1 - x0);
+  const scale = Math.min(stage.clientWidth / cw, stage.clientHeight / img.naturalHeight);
+  const w = Math.max(1, Math.round(cw * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
   return `<div class="rd-half" style="width:${w}px;height:${h}px">
     <img src="${rdUrl(i)}" alt="${i + 1} ページ目"
-      style="width:${w * 2}px;height:${h}px;margin-left:${side ? -w : 0}px"></div>`;
+      style="width:${Math.round(img.naturalWidth * scale)}px;height:${h}px;margin-left:${-Math.round(x0 * scale)}px"></div>`;
 }
 
 // ---- 右から左 ----
@@ -1622,9 +1702,17 @@ async function rdDrawRtl(dir) {
   if (rdWide(i)) { if (reader.half === null) reader.half = dir >= 0 ? 1 : 0; }
   else reader.half = null;
 
-  stage.innerHTML = reader.half === null
-    ? `<img src="${rdUrl(i)}" alt="${i + 1} ページ目">`
-    : rdHalfRtlHtml(i, reader.half);
+  const t = rdTrim(i);
+  if (reader.half !== null) {
+    // **右半分が先。** 見開きは右から読む
+    const mid = Math.round((t.x0 + t.x1) / 2);
+    stage.innerHTML = reader.half ? rdWinRtlHtml(i, mid, t.x1) : rdWinRtlHtml(i, t.x0, mid);
+  } else if (t.x0 || t.x1 < img.naturalWidth) {
+    stage.innerHTML = rdWinRtlHtml(i, t.x0, t.x1);
+  } else {
+    // 削る所が無いなら窓も要らない。CSS に収めさせる方が、画面が回った時に強い
+    stage.innerHTML = `<img src="${rdUrl(i)}" alt="${i + 1} ページ目">`;
+  }
   rdMeta();
   rdPrefetch();
 }
@@ -1669,10 +1757,15 @@ function rdVertLoaded(e) {
   if (!(img instanceof HTMLImageElement) || !img.parentElement) return;
   const box = img.parentElement;
   if (!box.classList.contains('rd-page')) return;
-  if (img.naturalWidth > img.naturalHeight) {
-    const i = Number(box.dataset.i);
-    reader.imgs.set(i, img);
-    box.innerHTML = rdHalfVertHtml(i, 1) + rdHalfVertHtml(i, 0);
+  const i = Number(box.dataset.i);
+  if (!Number.isInteger(i)) return;
+  reader.imgs.set(i, img);
+  const t = rdTrim(i);
+  if (rdWide(i)) {
+    const mid = Math.round((t.x0 + t.x1) / 2);
+    box.innerHTML = rdWinVertHtml(i, mid, t.x1) + rdWinVertHtml(i, t.x0, mid);
+  } else if (t.x0 || t.x1 < img.naturalWidth) {
+    box.innerHTML = rdWinVertHtml(i, t.x0, t.x1);
   } else {
     img.style.aspectRatio = '';
   }
@@ -1723,6 +1816,7 @@ async function openReader(fileId, mode = 'push') {
   reader.half = null;
   reader.mode = rdMode();
   reader.imgs.clear();
+  reader.trims.clear();
   ++reader.seq;
 
   $('rd').hidden = false;
@@ -1760,6 +1854,7 @@ function rdHide() {
   $('rd').hidden = true;
   ++reader.seq;
   reader.imgs.clear();
+  reader.trims.clear();
   $('rd-stage').innerHTML = '';
   clearTimeout(reader.barTimer);
   // **板が下に残っているかもしれない。** 残っている時は止めたままにする
@@ -1843,9 +1938,10 @@ function rdSetMode(m) {
     vdn = null;
   });
   stage.addEventListener('scroll', () => { if (reader.mode === 'vert') rdVertScroll(); });
-  // 割った半分は px で置いてあるので、画面が回ったら出し直す
+  // 窓は px で置いてあるので、画面が回ったら出し直す。
+  // 素の 1 枚は CSS が勝手に追従するので触らない
   window.addEventListener('resize', () => {
-    if (readerOpen() && reader.mode === 'rtl' && reader.half !== null) rdDrawRtl(1);
+    if (readerOpen() && reader.mode === 'rtl' && $('rd-stage').querySelector('.rd-half')) rdDrawRtl(1);
   });
   // load は上がってこないので捕まえる側で受ける
   stage.addEventListener('load', (e) => { if (reader.mode === 'vert') rdVertLoaded(e); }, true);
