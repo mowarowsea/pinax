@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { pipeline } from 'node:stream/promises';
 import { createExtractorFromFile } from 'node-unrar-js';
 
 /**
@@ -118,11 +119,13 @@ function toIndex(format: 'zip' | 'rar', all: { name: string; bytes: number }[]):
 
 // ---- zip ------------------------------------------------------------------
 
-interface ZipEntry {
+export interface ZipEntry {
   name: string;
   bytes: number;
   packed: number;
   method: number;
+  /** 中央ディレクトリに書いてある CRC。**圧縮されたまま写す時に要る** (split.ts) */
+  crc: number;
   /** ローカルヘッダの位置。実データはこの先にある (可変長の後ろ) */
   localHeader: number;
   encrypted: boolean;
@@ -187,6 +190,7 @@ function zipEntries(file: string): ZipEntry[] {
         bytes: cd.readUInt32LE(p + 24),
         packed: cd.readUInt32LE(p + 20),
         method: cd.readUInt16LE(p + 10),
+        crc: cd.readUInt32LE(p + 16),
         localHeader: cd.readUInt32LE(p + 42),
         encrypted: Boolean(flags & 1),
       });
@@ -271,8 +275,17 @@ async function rarRead(file: string, name: string, tmpDir: string): Promise<Buff
  * 1.3 秒、大きいもので 20 秒超)。中身は変わらないので**呼ぶ側が覚えておくこと**
  * — ここでは覚えない (ファイルが正、という土台を DB の都合で曲げないため)。
  */
-export async function readPageIndex(file: string, tmpDir: string): Promise<PageIndex> {
-  const ext = path.extname(file).toLowerCase();
+export async function readPageIndex(
+  file: string,
+  tmpDir: string,
+  /**
+   * 形式を名前ではなく呼ぶ側が決める。**作業中のファイルを確かめる時に要る** —
+   * 合本を割った直後の中身は `... 第01巻.zip.pinax-tmp` という名前で、
+   * 拡張子からは形式が読めない (src/split.ts)
+   */
+  opts: { as?: string } = {}
+): Promise<PageIndex> {
+  const ext = String(opts.as ?? path.extname(file)).toLowerCase();
   if (ext === '.zip') return toIndex('zip', zipEntries(file));
   if (ext === '.rar') return toIndex('rar', await rarEntries(file, tmpDir));
   throw new ArchiveError(`読めない書庫: ${ext}`, `${ext || 'この形式'} は開けません`);
@@ -288,5 +301,116 @@ export async function readPage(file: string, name: string, tmpDir: string): Prom
     if (!entry) throw new ArchiveError(`そのページはありません: ${name}`, '書庫の中にそのページがありません');
     return zipRead(file, entry);
   }
+  throw new ArchiveError(`読めない書庫: ${ext}`, `${ext || 'この形式'} は開けません`);
+}
+
+// ---- 割る側が使う口 --------------------------------------------------------
+
+/**
+ * 合本を割る時だけ使う口 (src/split.ts)。**ここも読むだけ**で、書くのは
+ * 呼んだ側が指した `dest` — 棚の外か、棚の中でも `.tmp` の付いた作業中の名前だけ。
+ *
+ * 普段の読み (`readPageIndex` / `readPage`) と分けてあるのは、割る時に要るものが
+ * 「画像 1 枚のバイト列」ではないため: zip なら**圧縮されたまま**写したいし
+ * (絵に触らず、CRC も元のまま引き継げる)、入れ子の書庫は数百 MB あるので
+ * メモリに載せずに流したい。
+ */
+
+/** zip の目次。圧縮されたまま写すのに要るものが全部入っている */
+export function readZipEntries(file: string): ZipEntry[] {
+  return zipEntries(file);
+}
+
+/** 実データの位置。ローカルヘッダを読まないと分からない (zipRead と同じ理屈) */
+function zipDataAt(fd: number, entry: ZipEntry): number {
+  const h = Buffer.alloc(30);
+  fs.readSync(fd, h, 0, 30, entry.localHeader);
+  if (h.readUInt32LE(0) !== 0x04034b50) {
+    throw new ArchiveError(`ローカルヘッダが壊れています: ${entry.name}`, '書庫が壊れているようです');
+  }
+  return entry.localHeader + 30 + h.readUInt16LE(26) + h.readUInt16LE(28);
+}
+
+/**
+ * zip の中身を**圧縮されたまま**取り出す。展開も再圧縮もしない。
+ *
+ * これで写した中身は元とビット単位で同じものになる。zip の合本を割る時に
+ * 絵へ触らずに済むのはこのため。
+ */
+export function readZipRaw(file: string, entry: ZipEntry): Buffer {
+  if (entry.encrypted) {
+    throw new ArchiveError(`鍵の掛かった zip: ${entry.name}`, 'パスワードが掛かっていて開けません');
+  }
+  if (entry.method !== 0 && entry.method !== 8) {
+    throw new ArchiveError(`未対応の圧縮方式 ${entry.method}: ${entry.name}`, `この zip の圧縮方式 (${entry.method}) は読めません`);
+  }
+  const fd = fs.openSync(file, 'r');
+  try {
+    const at = zipDataAt(fd, entry);
+    const buf = Buffer.alloc(entry.packed);
+    fs.readSync(fd, buf, 0, entry.packed, at);
+    return buf;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * 書庫の中身 1 つを**ファイルへ**出す。入れ子の書庫 (中に rar が 8 つ) を
+ * 取り出すためのもので、1 つが数百 MB あるので**メモリに載せずに流す。**
+ *
+ * `dest` は呼んだ側の責任。unrar と同じで、書庫の中の名前は使わない。
+ */
+export async function extractEntryTo(
+  file: string,
+  name: string,
+  dest: string,
+  tmpDir: string
+): Promise<void> {
+  const ext = path.extname(file).toLowerCase();
+  const want = name.replace(/\\/g, '/');
+
+  if (ext === '.rar') {
+    // unrar はファイルへしか出せない。固定名で出してから置き場所へ移す
+    const dir = fs.mkdtempSync(path.join(tmpDir, 'x-'));
+    try {
+      const ex = await createExtractorFromFile({
+        filepath: file,
+        targetPath: dir,
+        filenameTransform: () => RAR_OUT,
+      });
+      const got = [...ex.extract({ files: (h) => h.name.replace(/\\/g, '/') === want }).files];
+      if (!got.length) throw new ArchiveError(`そんな中身はありません: ${name}`, '書庫の中にそれがありません');
+      const at = path.join(dir, RAR_OUT);
+      if (!fs.existsSync(at)) throw new ArchiveError(`取り出せませんでした: ${name}`, '中身を取り出せませんでした');
+      await fs.promises.copyFile(at, dest);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    return;
+  }
+
+  if (ext === '.zip') {
+    const entry = zipEntries(file).find((e) => e.name === want);
+    if (!entry) throw new ArchiveError(`そんな中身はありません: ${name}`, '書庫の中にそれがありません');
+    if (entry.encrypted) {
+      throw new ArchiveError(`鍵の掛かった zip: ${entry.name}`, 'パスワードが掛かっていて開けません');
+    }
+    if (entry.method !== 0 && entry.method !== 8) {
+      throw new ArchiveError(`未対応の圧縮方式 ${entry.method}: ${entry.name}`, `この zip の圧縮方式 (${entry.method}) は読めません`);
+    }
+    const fd = fs.openSync(file, 'r');
+    let at: number;
+    try {
+      at = zipDataAt(fd, entry);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const src = fs.createReadStream(file, { start: at, end: at + entry.packed - 1 });
+    const out = fs.createWriteStream(dest);
+    await pipeline(entry.method === 0 ? [src, out] : [src, zlib.createInflateRaw(), out]);
+    return;
+  }
+
   throw new ArchiveError(`読めない書庫: ${ext}`, `${ext || 'この形式'} は開けません`);
 }

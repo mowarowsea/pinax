@@ -18,7 +18,8 @@
     "whoami": "node --no-warnings=ExperimentalWarning --import tsx src/cli-whoami.ts",
     "published": "node --no-warnings=ExperimentalWarning --import tsx src/cli-published.ts",
     "inbox": "node --no-warnings=ExperimentalWarning --import tsx src/cli-inbox.ts",
-    "pages": "node --no-warnings=ExperimentalWarning --import tsx src/cli-pages.ts"
+    "pages": "node --no-warnings=ExperimentalWarning --import tsx src/cli-pages.ts",
+    "split": "node --no-warnings=ExperimentalWarning --import tsx src/cli-split.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.3",

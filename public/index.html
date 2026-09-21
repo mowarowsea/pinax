@@ -277,6 +277,26 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .rnacts .go { border-color: var(--brand); color: var(--brand); font-weight: 700; }
 .rnnote { font-size: 11.5px; color: var(--ink-3); }
 
+/* ---- 合本を分割する ----
+   名前を直す紙 (.rnbox) と同じ顔にする。**どちらも棚の実物を動かす**ので、
+   見た目が違うと片方だけ軽い操作に見える */
+.spbox { margin: 12px 0 0; padding: 12px; border: 1px solid var(--line); border-left: 3px solid var(--brand);
+  border-radius: var(--radius); background: var(--panel); display: grid; gap: 10px; font-size: 12.5px; }
+.sphead { font-weight: 600; }
+.spmeta { font-weight: 400; color: var(--ink-3); }
+.spplan { border-radius: 8px; padding: 9px 12px; background: var(--brand-soft); color: var(--ink-2); }
+.spto { font-weight: 700; color: var(--brand); word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height: 1.6; }
+.spto .spmeta { font-family: inherit; font-weight: 400; }
+.spfrom { color: var(--ink-3); text-decoration: line-through; word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+/* 分割できない時は、地の色のまま点線で出す。押せるものが無いことが一目で分かるように */
+.spno { border: 1px dashed var(--line); border-radius: 8px; padding: 9px 12px; color: var(--ink-3); }
+.spno .spwarn { color: var(--gap); font-weight: 600; margin-bottom: 4px; }
+.spacts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.spacts .go { border-color: var(--brand); color: var(--brand); font-weight: 700; }
+.spwork { color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
+
 /* ---- 棚に無い作品の名前を作る ---- */
 .nm-hint { font-size: 11.5px; color: var(--ink-3); margin-top: 9px; }
 .nm-row { display: flex; gap: 8px; align-items: center; background: var(--bg); margin-top: 9px;
@@ -651,6 +671,8 @@ function volCardHtml(cover, label, files, opts = {}) {
     <span class="lbl">${esc(label)}${tags.length ? ' ' + esc(tags.join(',')) : ''}</span>
     ${opts.slot === undefined ? '' : `<button class="th" data-cover-slot="${esc(opts.slot)}"
       data-cover-label="${esc(label)}">サムネ変更</button>`}
+    ${opts.split === undefined ? '' : `<button class="th" data-split="${opts.split}"
+      data-split-label="${esc(label)}">巻ごとに分割</button>`}
   </div>`;
 }
 
@@ -673,6 +695,12 @@ function volHtml(v) {
   return volCardHtml(readCover(v.files, inner, v.label), v.label, v.files, {
     cls: v.duplicate ? ' dup' : '',
     slot: v.coverSlot,
+    /**
+     * **合本にだけ出す。** 単巻に出しても割るものが無い。
+     * 1 巻に 2 本以上ぶら下がっている時 (別版・分割書庫) も出さない —
+     * どちらを割るのか機械には決められないし、片方だけ割ると重複が増える
+     */
+    split: v.volumeFrom !== v.volumeTo && v.files.length === 1 ? v.files[0].id : undefined,
   });
 }
 
@@ -737,6 +765,157 @@ function shelfLineHtml(d) {
   return `<div class="shelfline quiet">${
     sh.latestYear ? `${sh.latestYear}年の第${sh.publishedMax}巻` : `第${sh.publishedMax}巻`
   }まで確認、それ以降は不明<small>完結したのか、書誌がまだ新刊を知らないのかは区別できません</small></div>`;
+}
+
+/**
+ * 合本 (第01-02巻) を巻ごとのファイルに分ける。
+ *
+ * **押したら走り出す、にはしない。** 中がどう並んでいるかは開けてみないと分からず、
+ * 分割できない合本 (ページがベタ連番) が必ず混ざる。先に中を見て、何が出来るかを
+ * 見せてから押させる — 名前を直す紙 (.rnbox) と同じ二段。
+ *
+ * 進み具合は**この紙だけ貼り直す**。板ごと描き直すと 1 秒おきに画面が跳ねる。
+ */
+const splitter = { fileId: null, seriesId: null, label: '', plan: null, job: null, done: null, error: null };
+
+const SPLIT_KIND = { nested: '中身が書庫', folders: '巻ごとのフォルダ', flat: 'ベタ連番' };
+
+function splitClose() {
+  Object.assign(splitter, { fileId: null, seriesId: null, label: '', plan: null, job: null, done: null, error: null });
+}
+
+function splitBoxHtml() {
+  const s = splitter;
+  // 別の作品を開いたら出さない。**紙は開いていた作品のもの**で、板と地続きに見えるので
+  if (!s.fileId || !lastDetail || lastDetail.id !== s.seriesId) return '';
+  const close = '<button class="mini" id="sp-close">閉じる</button>';
+
+  if (s.done) {
+    return `<div class="spbox">
+      <div class="sphead">分割しました</div>
+      <div class="spplan">
+        <div class="spfrom">${esc(s.done.from)}</div>
+        ${s.done.made.map((n) => `<div class="spto">${esc(n)}</div>`).join('')}
+      </div>
+      <div class="spacts"><button class="btn go" id="sp-scan">棚を読み直す</button>${close}</div>
+    </div>`;
+  }
+
+  if (s.error) {
+    return `<div class="spbox">
+      <div class="sphead">${esc(s.label)} を分割</div>
+      <div class="spno"><div class="spwarn">分割できません</div>${esc(s.error)}</div>
+      <div class="spacts">${close}</div>
+    </div>`;
+  }
+
+  if (s.job) {
+    const p = s.job.progress;
+    const line = p
+      ? `${p.phase} ${p.part}/${p.parts} ${p.label}${p.pages ? ` ${p.page}/${p.pages}` : ''}`
+      : '始めています';
+    return `<div class="spbox">
+      <div class="sphead">${esc(s.label)} を分割</div>
+      <div class="spwork"><span class="spin"></span>${esc(line)}</div>
+    </div>`;
+  }
+
+  if (!s.plan) {
+    return `<div class="spbox">
+      <div class="sphead">${esc(s.label)} を分割</div>
+      <div class="spwork"><span class="spin"></span>中を見ています</div>
+    </div>`;
+  }
+
+  const meta = `<span class="spmeta">— ${s.plan.format} / ${SPLIT_KIND[s.plan.kind]}`
+    + `${s.plan.pages ? ` / ${s.plan.pages} ページ` : ''}</span>`;
+  const head = `<div class="sphead">${esc(s.label)} を分割 ${meta}</div>`;
+
+  if (!s.plan.ok) {
+    return `<div class="spbox">${head}
+      <div class="spno"><div class="spwarn">分割できません</div>${esc(s.plan.reason)}</div>
+      <div class="spacts">${close}</div>
+    </div>`;
+  }
+
+  return `<div class="spbox">${head}
+    <div class="spplan">
+      <div class="spfrom">${esc(s.plan.from)}</div>
+      ${s.plan.parts.map((x) => `<div class="spto">${esc(x.name)}
+        <span class="spmeta">${x.pages} ページ</span></div>`).join('')}
+    </div>
+    <div class="spacts"><button class="btn go" id="sp-go">分割する</button>${close}</div>
+  </div>`;
+}
+
+function renderSplitBox() {
+  const box = $('splitbox');
+  if (!box) return;
+  box.innerHTML = splitBoxHtml();
+  $('sp-close')?.addEventListener('click', () => { splitClose(); renderSplitBox(); });
+  // 読み直しは棚のボタンに任せる。同じことをする道を 2 本にしない
+  $('sp-scan')?.addEventListener('click', () => { splitClose(); renderSplitBox(); $('scan').click(); });
+  $('sp-go')?.addEventListener('click', splitGo);
+}
+
+async function openSplit(fileId, label) {
+  // 走っている最中は閉じない。押し間違いで進み具合を見失わないように
+  if (splitter.fileId === fileId && !splitter.job) { splitClose(); renderSplitBox(); return; }
+  if (splitter.job) return;
+  splitClose();
+  splitter.fileId = fileId;
+  splitter.seriesId = lastDetail ? lastDetail.id : null;
+  splitter.label = label;
+  renderSplitBox();
+  try {
+    splitter.plan = await api(`/api/files/${fileId}/split`);
+  } catch (e) {
+    splitter.error = e.message;
+  }
+  renderSplitBox();
+}
+
+async function splitGo() {
+  const id = splitter.fileId;
+  try {
+    await api(`/api/files/${id}/split`, { method: 'POST' });
+  } catch (e) {
+    toast('できません: ' + e.message, 6000);
+    return;
+  }
+  splitter.job = { running: true, progress: null };
+  renderSplitBox();
+  void splitWatch(id);
+}
+
+/** 終わるまで見に行く。**画面を離れたら (fileId が変わったら) 降りる** */
+async function splitWatch(id) {
+  while (splitter.fileId === id && splitter.job) {
+    await new Promise((r) => setTimeout(r, 900));
+    if (splitter.fileId !== id) return;
+    let st;
+    try {
+      st = await api(`/api/files/${id}/split/status`);
+    } catch (e) {
+      splitter.job = null;
+      splitter.error = e.message;
+      renderSplitBox();
+      return;
+    }
+    if (st.running) {
+      splitter.job = st;
+      renderSplitBox();
+      continue;
+    }
+    splitter.job = null;
+    if (st.error) splitter.error = st.error;
+    else {
+      splitter.done = st.result;
+      toast(`${st.result.made.length} 本に分割しました`, 5000);
+    }
+    renderSplitBox();
+    return;
+  }
 }
 
 function detailHtml(d) {
@@ -816,6 +995,7 @@ function detailHtml(d) {
   </div>
   ${d.volumes.length ? `<h3 class="sec">巻 <span style="font-weight:400">— 表紙を押すと読み始めます</span></h3>
   <div class="vols">${line.join('')}</div>` : ''}
+  <div id="splitbox">${splitBoxHtml()}</div>
   ${sideSectionHtml(d)}
   ${dupSectionHtml(d)}
   ${d.loose.length ? `<h3 class="sec">巻数も呼び名も読めなかったファイル</h3>
@@ -1116,6 +1296,12 @@ function wireDetail(d) {
   $('pick-open')?.addEventListener('click', () => openPicker(null));
   $('detail').querySelectorAll('button[data-cover-slot]').forEach((b) => {
     b.addEventListener('click', () => openPicker({ slot: b.dataset.coverSlot, label: b.dataset.coverLabel }));
+  });
+
+  // 合本を巻ごとに分ける。**下見を見てから押す**二段 (splitBoxHtml)
+  renderSplitBox();
+  $('detail').querySelectorAll('button[data-split]').forEach((b) => {
+    b.addEventListener('click', () => openSplit(Number(b.dataset.split), b.dataset.splitLabel));
   });
 
   // 表紙を押したら読み始める

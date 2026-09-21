@@ -24,6 +24,8 @@ import {
 } from './archive.js';
 import { openInExplorer, resolveInsideRoot, revealAbility } from './reveal.js';
 import { applyRename, planRename, RenameError } from './rename.js';
+import { planSplit, SplitError } from './split.js';
+import { SplitJobs } from './split-job.js';
 import { planFolderName, planVolumeName } from './naming.js';
 import { shelfBusy } from './lock.js';
 
@@ -854,6 +856,58 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     reply.header('ETag', tag);
     reply.header('Content-Length', String(buf.length));
     return reply.send(buf);
+  });
+
+
+  // ---- 合本を分割する -----------------------------------------------------
+
+  /**
+   * 合本 (第01-02巻) を巻ごとのファイルに分ける。
+   *
+   * **下見と実行を分ける。** 中がどう並んでいるかは開けてみないと分からず、
+   * 分割できない合本 (ページがベタ連番) が必ず混ざる。押した瞬間に走り出す作りだと、
+   * 「押したのに何も起きない」としか画面から読めない。
+   *
+   * 実行は**子プロセスに出す** (split-job.ts)。rar の取り出しは同期呼び出しで
+   * イベントループを止めるので、ここでやると `/api/health` が返らなくなる。
+   */
+  const splits = new SplitJobs();
+
+  const splitFail = (e: unknown): never => {
+    if (e instanceof SplitError) throw new HttpError(422, e.message);
+    if (e instanceof ArchiveError) throw new HttpError(422, e.reason);
+    throw e;
+  };
+
+  app.get<{ Params: { id: string } }>('/api/files/:id/split', async (req) => {
+    try {
+      return await planSplit(db, cfg, Number(req.params.id));
+    } catch (e) {
+      return splitFail(e);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/files/:id/split', async (req) => {
+    const id = Number(req.params.id);
+    // 分割は棚を書き換える。走っている間に別の分割やスキャンと噛み合わせない
+    if (splits.busy) throw new HttpError(409, '別の分割が走っています');
+
+    // 始める前にもう一度下見する。**分割できないものに子を起こさない**
+    let plan;
+    try {
+      plan = await planSplit(db, cfg, id);
+    } catch (e) {
+      return splitFail(e);
+    }
+    if (!plan.ok) throw new HttpError(422, plan.reason ?? '分割できません');
+
+    return { ok: true, job: splits.start(id), plan };
+  });
+
+  app.get<{ Params: { id: string } }>('/api/files/:id/split/status', async (req) => {
+    const job = splits.get(Number(req.params.id));
+    if (!job) throw new HttpError(404, 'その分割は走っていません');
+    return job;
   });
 
   // ---- 画面 ---------------------------------------------------------------
