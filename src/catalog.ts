@@ -79,6 +79,11 @@ export interface SeriesSummary {
   shelf: ShelfState;
   /** 巻の重複・巻数不明。**絞り込みの対象** */
   issues: SeriesIssues;
+  /**
+   * 人が「ケアが必要」と印を付けたファイルの数。**機械は数えない** —
+   * 壊れた書庫もひどいスキャンも、開いて見た人にしか分からない
+   */
+  careFiles: number;
   coverUrl: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
@@ -126,6 +131,16 @@ const dupFilesSql = (seriesRef: string): string => `(SELECT COALESCE(SUM(n - 1),
 const looseFilesSql = (seriesRef: string): string =>
   `(SELECT COUNT(*) FROM files f WHERE f.series_id = ${seriesRef} AND f.present = 1
       AND f.volume_id IS NULL AND f.side_label IS NULL)`;
+
+/**
+ * 「ケアが必要」と人が印を付けたファイルの数 (db.ts の files.care)。
+ *
+ * **要確認 (issues) とは別に数える。** 要確認は機械が「読めなかった / 割り当てが重なった」と
+ * 気付いたことで、要ケアは人が「中身に手を入れたい」と決めたこと。混ぜると、直しようの無い
+ * ものと自分で印を付けたものが同じ札で並ぶ
+ */
+const careFilesSql = (seriesRef: string): string =>
+  `(SELECT COUNT(*) FROM files f WHERE f.series_id = ${seriesRef} AND f.present = 1 AND f.care = 1)`;
 
 /**
  * 最後に巻が 1 つ増えた時刻。
@@ -199,6 +214,8 @@ export interface ListOptions {
    *   any   … どちらか
    */
   issues?: 'any' | 'dup' | 'loose';
+  /** 人が「ケアが必要」と印を付けたファイルを抱えている作品だけ。**総数にも効く** */
+  care?: boolean;
   sort?: 'title' | 'author' | 'added' | 'volumes' | 'updated';
   limit?: number;
   offset?: number;
@@ -209,6 +226,7 @@ interface CountRow {
   file_count: number;
   bytes: number;
   loose: number;
+  care: number;
 }
 
 /**
@@ -257,6 +275,11 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
     const loose = `${looseFilesSql('s.id')} > 0`;
     where.push(opts.issues === 'dup' ? dup : opts.issues === 'loose' ? loose : `(${dup} OR ${loose})`);
   }
+  if (opts.care) {
+    // issues と同じで SQL 側。**EXISTS で聞く** — 数を数える必要は無く、
+    // 1 本見つけた時点で打ち切れる (files_care_idx がそのまま効く)
+    where.push('EXISTS (SELECT 1 FROM files f WHERE f.series_id = s.id AND f.present = 1 AND f.care = 1)');
+  }
 
   const clause = `WHERE ${where.join(' AND ')}`;
   const total = Number(
@@ -280,6 +303,7 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
               (SELECT COUNT(*) FROM files f WHERE f.series_id = s.id AND f.present = 1) AS file_count,
               (SELECT COALESCE(SUM(f.size), 0) FROM files f WHERE f.series_id = s.id AND f.present = 1) AS bytes,
               ${looseFilesSql('s.id')} AS loose,
+              ${careFilesSql('s.id')} AS care_files,
               ${dupVolumesSql('s.id')} AS dup_volumes,
               ${dupFilesSql('s.id')} AS dup_files,
               (SELECT c.id FROM covers c WHERE c.series_id = s.id AND c.slot = '') AS cover_id,
@@ -315,6 +339,7 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
       hasGap: holdings.some((h) => h.missing.length > 0),
       shelf: shelfStateOf(pub, done.completedBy, holdings),
       issues: toIssues(Number(r.dup_volumes ?? 0), Number(r.dup_files ?? 0), Number(r.loose ?? 0)),
+      careFiles: Number(r.care_files ?? 0),
       coverUrl: r.cover_id ? coverUrlOf(Number(r.cover_id), r.cover_file) : null,
       firstSeenAt: String(r.first_seen_at),
       lastSeenAt: String(r.last_seen_at),
@@ -362,6 +387,13 @@ export interface VolumeDetail {
     partNo: number | null;
     tags: string[];
     present: boolean;
+    /**
+     * 人が「ケアが必要」と印を付けた (db.ts の files.care)。**tags とは別物** —
+     * tags はファイル名から機械が読む印で、こちらは中を見た人が下した判断
+     */
+    care: boolean;
+    /** 何をどうしたいか。空なら null */
+    careNote: string | null;
   }[];
 }
 
@@ -432,6 +464,8 @@ export function getSeriesDetail(db: Db, id: number): SeriesDetail | null {
     partNo: r.part_no === null ? null : Number(r.part_no),
     tags: JSON.parse(String(r.tags ?? '[]')) as string[],
     present: Number(r.present) === 1,
+    care: Number(r.care ?? 0) === 1,
+    careNote: (r.care_note as string | null) ?? null,
   });
 
   const covers = db.raw
@@ -550,7 +584,8 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
   const agg = db.raw
     .prepare(
       `SELECT COUNT(*) AS file_count, COALESCE(SUM(size), 0) AS bytes,
-              SUM(CASE WHEN volume_id IS NULL AND side_label IS NULL THEN 1 ELSE 0 END) AS loose
+              SUM(CASE WHEN volume_id IS NULL AND side_label IS NULL THEN 1 ELSE 0 END) AS loose,
+              SUM(CASE WHEN care = 1 THEN 1 ELSE 0 END) AS care
          FROM files WHERE series_id = ? AND present = 1`
     )
     .get(s.id) as unknown as CountRow;
@@ -581,6 +616,7 @@ function listSeriesOne(db: Db, s: SeriesRow): SeriesSummary {
     hasGap: holdings.some((h) => h.missing.length > 0),
     shelf: shelfStateOf(pub, s.completedBy, holdings),
     issues: issuesOf(db, s.id),
+    careFiles: Number(agg.care ?? 0),
     coverUrl: cover ? coverUrlOf(cover.id, cover.file) : null,
     firstSeenAt: s.firstSeenAt,
     lastSeenAt: s.lastSeenAt,

@@ -107,6 +107,16 @@ CREATE TABLE IF NOT EXISTS files (
   part_no INTEGER,
   side_label TEXT,
   tags TEXT NOT NULL DEFAULT '[]',
+  -- 人が画面で立てた「ケアが必要」の印。書庫が壊れている、スキャンがひどい、といった
+  -- **一応持ってはいるが手を入れたい** 本を、あとから拾い直すための目印。
+  --
+  -- **tags と混ぜてはいけない。** tags はファイル名から機械が読む列で、upsertFile が
+  -- 毎回上書きする ([LQ] などの印)。ここへ人の判断を混ぜると次のスキャンで消える。
+  -- series.completed_user や covers.pinned と同じ立場の列で、**機械は一切書かない**
+  care INTEGER NOT NULL DEFAULT 0,
+  -- 何をどうしたいか。空でも印としては成立するので **null と '' を区別しない**
+  care_note TEXT,
+  care_at TEXT,
   present INTEGER NOT NULL DEFAULT 1,
   first_seen_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
@@ -273,6 +283,16 @@ export interface SeriesPick {
   pickedAt: string;
 }
 
+/** 「ケアが必要」の印 1 本ぶん (files の care 列。人しか書かない) */
+export interface CareRow {
+  fileId: number;
+  seriesId: number | null;
+  care: boolean;
+  /** 何をどうしたいか。空なら null */
+  careNote: string | null;
+  careAt: string | null;
+}
+
 export interface VolumeRow {
   id: number;
   seriesId: number;
@@ -406,9 +426,22 @@ export class Db {
       this.raw.exec('DROP TABLE covers_old');
     }
 
+    /**
+     * 人が立てる「ケアが必要」の印 (SCHEMA 側の註を参照)。
+     * **足した直後は全行 0 で、スキャンでは一生埋まらない** — 人が押すまで立たないのが正しい。
+     */
+    if (!cols('files').has('care')) {
+      this.raw.exec('ALTER TABLE files ADD COLUMN care INTEGER NOT NULL DEFAULT 0');
+      this.raw.exec('ALTER TABLE files ADD COLUMN care_note TEXT');
+      this.raw.exec('ALTER TABLE files ADD COLUMN care_at TEXT');
+    }
+
     // 列を足した後に張る。SCHEMA 側に置くと、既にある DB では列より先に走って失敗する
     this.raw.exec('CREATE INDEX IF NOT EXISTS series_enriched_idx ON series(enriched_at)');
     this.raw.exec('CREATE INDEX IF NOT EXISTS bib_cover_tried_idx ON bib(cover_tried_at)');
+    // 立っている行だけの部分索引。棚の絞り込みは「1 本でも立っているか」しか聞かないので、
+    // 全 5000 行を持つ索引は要らない (立っているのは普通ひと握り)
+    this.raw.exec('CREATE INDEX IF NOT EXISTS files_care_idx ON files(series_id) WHERE care = 1');
   }
 
   /** この bib 行の表紙を取りに行った印。**失敗した時こそ押す** */
@@ -704,6 +737,40 @@ export class Db {
       )
       .run(input.rootId, input.relPath, input.seriesId, input.volumeId, input.size, input.mtime,
         input.ext, input.part, input.partNo, input.sideLabel, JSON.stringify(input.tags), t, t);
+  }
+
+  /**
+   * 「ケアが必要」の印を立てる / 外す。**人しか呼ばない道** (SCHEMA の files.care を参照)。
+   *
+   * 外した時もメモは消さない — 一度直したつもりでまた戻す時に、何が起きていたかを
+   * 書き直さずに済む。`note` を省いた呼びではメモに触らない (印だけの付け外し)。
+   */
+  setCare(fileId: number, care: boolean, note?: string | null): CareRow | null {
+    if (note === undefined) {
+      this.raw
+        .prepare('UPDATE files SET care = ?, care_at = ? WHERE id = ?')
+        .run(care ? 1 : 0, care ? now() : null, fileId);
+    } else {
+      const text = String(note ?? '').trim();
+      this.raw
+        .prepare('UPDATE files SET care = ?, care_note = ?, care_at = ? WHERE id = ?')
+        .run(care ? 1 : 0, text || null, care ? now() : null, fileId);
+    }
+    return this.getCare(fileId);
+  }
+
+  getCare(fileId: number): CareRow | null {
+    const r = this.raw
+      .prepare('SELECT id, series_id, care, care_note, care_at FROM files WHERE id = ?')
+      .get(fileId) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return {
+      fileId: Number(r.id),
+      seriesId: r.series_id === null ? null : Number(r.series_id),
+      care: Number(r.care) === 1,
+      careNote: (r.care_note as string | null) ?? null,
+      careAt: (r.care_at as string | null) ?? null,
+    };
   }
 
   /** 今回のスキャンで見なかったものを「消えた」に倒す。行は消さない (履歴を残すため) */

@@ -18,6 +18,10 @@
   --line: #e6ded6;
   --gap: #c2410c;
   --ok: #3f7d58;
+  /* 要ケア。要確認 (--gap のオレンジ) の隣に並ぶので、はっきり別の色にする —
+     機械が気付いた綻びと、人が中を見て決めた印は、同じ札に見えてはいけない */
+  --care: #6d4aa8;
+  --care-soft: #efe9f8;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(40,25,20,.06), 0 6px 18px rgba(40,25,20,.07);
 }
@@ -34,6 +38,8 @@
     --line: #352d29;
     --gap: #e0703f;
     --ok: #6cae87;
+    --care: #ad8ee0;
+    --care-soft: #2b2338;
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 18px rgba(0,0,0,.35);
   }
 }
@@ -177,11 +183,31 @@ main { padding: 16px 20px 60px; }
 
 h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 10px; border-top: 1px solid var(--line); padding-top: 14px; }
 .vols { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
-.vol { display: flex; flex-direction: column; gap: 5px; }
+.vol { display: flex; flex-direction: column; gap: 5px; position: relative; }
 .vol .cover { aspect-ratio: 2/3; }
 .vol .lbl { font-size: 11.5px; font-weight: 600; text-align: center; }
 .vol .th { font-family: inherit; font-size: 11px; text-align: center; border: 1px solid var(--line); background: transparent; border-radius: 5px; padding: 3px; color: var(--ink-2); display: block; width: 100%; cursor: pointer; }
 .vol .th:hover { border-color: var(--brand); color: var(--brand); }
+.vol .th.dots { letter-spacing: .12em; }
+/**
+ * 板の操作は「···」1 つに畳む。**板の上にボタンを並べない** — 巻が 30 も 40 も
+ * ある作品で、1 枚あたり 3 つのボタンが縦に積まれると棚が読めなくなる。
+ * 開いた時だけ浮かせるので、格子の行の高さは動かない
+ */
+.volmenu {
+  position: absolute; top: 100%; left: 0; z-index: 5; min-width: 148px; margin-top: 2px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: var(--shadow); padding: 4px; display: grid; gap: 2px;
+}
+/* 右端の板では左へ伸ばす。そのままだと板の外へ出て押せない */
+.volmenu.right { left: auto; right: 0; }
+.volmenu button {
+  font-family: inherit; font-size: 12px; text-align: left; border: 0; background: transparent;
+  color: var(--ink-2); border-radius: 6px; padding: 7px 9px; width: 100%; white-space: nowrap;
+}
+.volmenu button:hover { background: var(--brand-soft); color: var(--brand); }
+.volmenu button.care { color: var(--care); font-weight: 600; }
+.volmenu button.care:hover { background: var(--care-soft); color: var(--care); }
 /* 持っていない巻。**欠番と未購入を分けない** (出ているのに無い、が分かれば足りる) */
 .vol.missing .cover { background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--gap) 6px, var(--gap) 7px); box-shadow: none; border: 1px dashed var(--gap); }
 .vol.missing .lbl { color: var(--gap); }
@@ -250,6 +276,29 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
   padding: 2px 8px; font-size: 11px; white-space: nowrap; }
 .mini:hover { border-color: var(--brand); color: var(--brand); }
 .more { font-size: 11.5px; color: var(--ink-3); }
+
+/* ---- 要ケア (壊れている・スキャンがひどい) ----
+   **要確認と色も置き場も分ける。** 要確認は機械が気付いた棚の綻びで、直しようが
+   無いものも混ざる。要ケアは人が中を見て「手を入れたい」と決めた印で、
+   数も理由も人にしか分からない */
+.badge.care { background: var(--care); }
+.chip.care[aria-pressed="true"] { background: var(--care); border-color: var(--care); }
+.vol.care .cover { outline: 2px solid var(--care); outline-offset: -2px; }
+.filelist .row .mini.care-on { border-color: var(--care); background: var(--care); color: #fff; }
+.filelist .row .mini.care-on:hover { border-color: var(--care); color: #fff; }
+
+/* 印の付いた本だけを並べる節。**メモを書くのはここ 1 箇所。**
+   板の下に入力欄をぶら下げると格子の行が丸ごと伸びて並びが崩れる */
+.carebox { margin: 10px 0 0; padding: 12px; border: 1px solid var(--line);
+  border-left: 3px solid var(--care); border-radius: var(--radius); display: grid; gap: 12px; }
+.carerow { display: grid; gap: 5px; }
+.carerow .hd { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.carerow .hd b { font-size: 12.5px; color: var(--care); font-weight: 600; }
+.carerow .hd .nm { font-size: 11.5px; color: var(--ink-3); word-break: break-all; flex: 1 1 200px; }
+.carerow input { border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  border-radius: 8px; padding: 7px 10px; font-size: 13px; width: 100%; }
+.carerow input:focus { outline: 2px solid var(--care-soft); border-color: var(--care); }
+.carenote-hint { font-size: 11.5px; color: var(--ink-3); }
 
 /* ---- 名前を直す ---- */
 .rnbox { margin: 12px 0 0; padding: 12px; border: 1px solid var(--line); border-left: 3px solid var(--brand);
@@ -421,6 +470,8 @@ button.cover { border: 0; padding: 0; font: inherit; }
   border: 1px solid #4a403a; border-radius: 7px; padding: 7px 12px; cursor: pointer;
 }
 .rd-b:hover { border-color: #867c77; }
+/* 読む画面は常に暗いので、--care ではなく明るい方の紫を直に置く */
+.rd-b[data-on="1"] { border-color: #ad8ee0; background: #6d4aa8; color: #fff; }
 .rd-no { font-size: 12px; color: #b5aba5; font-variant-numeric: tabular-nums; }
 .rd-bar input[type=range] { width: 100%; margin: 0 0 8px; accent-color: var(--brand); }
 
@@ -492,6 +543,7 @@ button.cover { border: 0; padding: 0; font: inherit; }
       <button class="chip" id="f-ongoing" aria-pressed="false">継続中</button>
       <button class="chip" id="f-nocover" aria-pressed="false">表紙なし</button>
       <button class="chip" id="f-issues" aria-pressed="false">要確認</button>
+      <button class="chip care" id="f-care" aria-pressed="false">要ケア</button>
     </div>
     <select class="sort" id="sort">
       <option value="title">作品名順</option>
@@ -533,6 +585,8 @@ button.cover { border: 0; padding: 0; font: inherit; }
     <div class="rd-row">
       <button class="rd-b" id="rd-close">閉じる</button>
       <button class="rd-b" id="rd-mode">縦読み</button>
+      <!-- スキャンのひどさに気付くのは読んでいる最中。閉じて板まで戻らずに印を付けられる -->
+      <button class="rd-b" id="rd-care">要ケア</button>
       <span style="flex:1"></span>
       <span class="rd-no" id="rd-no"></span>
     </div>
@@ -591,7 +645,27 @@ async function api(path, opts) {
   return body;
 }
 
-const state = { q: '', gaps: false, behind: false, completed: undefined, needsCover: false, issues: false, sort: 'title' };
+/**
+ * 並び順だけ localStorage に覚える。**端末ごとに別で構わない** (読み方の縦/横と同じ立場)。
+ * 絞り込みは覚えない — 次に開いた時に棚が勝手に減っていると、消えたのか絞られているのか
+ * 分からない。並び順は何件出ているかを変えないので、覚えていても迷子にならない。
+ */
+const SORT_KEY = 'pinax.sort';
+const SORTS = ['title', 'author', 'volumes', 'added', 'updated'];
+function savedSort() {
+  try {
+    const v = localStorage.getItem(SORT_KEY);
+    return SORTS.includes(v) ? v : 'title';
+  } catch { return 'title'; }
+}
+function saveSort(v) {
+  try { localStorage.setItem(SORT_KEY, v); } catch { /* 見られない端末でも棚は読めること自体は困らない */ }
+}
+
+const state = {
+  q: '', gaps: false, behind: false, completed: undefined, needsCover: false, issues: false,
+  care: false, sort: savedSort(),
+};
 
 /**
  * この端末で pinax が何をできるか。/api/health が**接続元ごとに**答える。
@@ -615,6 +689,9 @@ function cardHtml(s) {
   // 手元の最大巻より先が出ている。**欠番とは意味が違う** ので別に出す
   if (s.shelf && s.shelf.aheadCount) badges.push(`<span class="badge ahead">+${s.shelf.aheadCount}</span>`);
   if (s.issues && s.issues.any) badges.push('<span class="badge warn">要確認</span>');
+  // **何冊あるかは出さない。** 棚で要るのは「この作品に手を入れたい本がある」だけで、
+  // 数まで並べると欠番の数字と札の数字が 2 つ並んで読み違える
+  if (s.careFiles) badges.push('<span class="badge care">要ケア</span>');
   if (s.completed) badges.push('<span class="badge done">完</span>');
   const range = h ? `1〜${h.max}${h.unit}` : (s.looseFiles ? `${s.looseFiles}点` : '');
   return `<button class="card" data-id="${s.id}">
@@ -633,6 +710,7 @@ async function loadGrid() {
   if (state.completed !== undefined) p.set('completed', state.completed ? '1' : '0');
   if (state.needsCover) p.set('needsCover', '1');
   if (state.issues) p.set('issues', '1');
+  if (state.care) p.set('care', '1');
 
   const { total, items } = await api('/api/series?' + p);
   $('grid').innerHTML = items.map(cardHtml).join('');
@@ -644,7 +722,9 @@ async function loadGrid() {
       ? `欠番のある作品 ${shown} 件`
       : state.issues
         ? `要確認の作品 ${shown} 件 — 同じ巻に複数のファイル、または何巻か読めないファイルがあります`
-        : `${shown} 件を表示${total > shown ? ` (該当 ${total} 件)` : ''}`;
+        : state.care
+          ? `要ケアの本がある作品 ${shown} 件 — 壊れている・スキャンがひどい等、自分で印を付けたものです`
+          : `${shown} 件を表示${total > shown ? ` (該当 ${total} 件)` : ''}`;
 }
 
 // ---- 詳細 ---------------------------------------------------------------
@@ -660,20 +740,99 @@ async function loadGrid() {
  * サイズも保存も出さない。落とすのは下のファイル一覧から今まで通りできるし、
  * 読めるようになった今、板の上で要るのは**開く口と、絵を直す口**だけ。
  *
+ * **操作は「···」1 つに畳む。** サムネ変更・巻ごとに分割・要ケアと増えた時、板ごとに
+ * ボタンが 3 つ縦に積まれると、巻が 40 もある作品で棚が読めなくなる。中身は押した時に
+ * 組み立てる (volMenuFor) ので、ここが持つのは**menu を開くのに要る印だけ**。
+ *
  * `slot` は表紙の宛先で、詳細が返したものをそのまま持ち回る (src/cover-slot.ts)。
  * **画面では組み立てない** — 綴り方が 2 箇所に分かれた時点で、片方だけ直して繋がらなくなる。
  */
 function volCardHtml(cover, label, files, opts = {}) {
   const tags = files.flatMap((x) => x.tags);
-  return `<div class="vol${opts.cls ?? ''}">
+  // 1 枚の板に 2 本以上ぶら下がることがある (分割書庫・同じ巻の別版)。
+  // **印はまとめて付け外しする** — 板の上に本は 1 冊しか見えていないので、
+  // どちらか片方だけ立っている状態を作る口をここに置いても押しようが無い
+  const ids = files.map((f) => f.id);
+  const care = files.some((f) => f.care);
+  const hasMenu = opts.slot !== undefined || opts.split !== undefined || ids.length > 0;
+  return `<div class="vol${opts.cls ?? ''}${care ? ' care' : ''}">
     ${cover}
     <span class="lbl">${esc(label)}${tags.length ? ' ' + esc(tags.join(',')) : ''}</span>
-    ${opts.slot === undefined ? '' : `<button class="th" data-cover-slot="${esc(opts.slot)}"
-      data-cover-label="${esc(label)}">サムネ変更</button>`}
-    ${opts.split === undefined ? '' : `<button class="th" data-split="${opts.split}"
-      data-split-label="${esc(label)}">巻ごとに分割</button>`}
+    ${!hasMenu ? '' : `<button class="th dots" aria-label="${esc(label)}の操作" aria-expanded="false"
+      data-menu-label="${esc(label)}"
+      ${opts.slot === undefined ? '' : `data-cover-slot="${esc(opts.slot)}"`}
+      ${opts.split === undefined ? '' : `data-split="${opts.split}"`}
+      data-care-ids="${ids.join(',')}" data-care="${care ? '1' : '0'}">···</button>`}
   </div>`;
 }
+
+/**
+ * 板の「···」を押した時に出す小さな品書き。**押した時に組み立てる** —
+ * 巻が 40 ある作品で 40 枚ぶんの品書きを先に DOM へ置いても、ほとんど開かれない。
+ *
+ * 開いているのは常に 1 つ。次を開く時と、外を押した時と、板を貼り直す時に閉じる。
+ */
+let volMenuOpen = null;
+
+function closeVolMenu() {
+  if (!volMenuOpen) return;
+  volMenuOpen.menu.remove();
+  volMenuOpen.button.setAttribute('aria-expanded', 'false');
+  volMenuOpen = null;
+}
+
+function openVolMenu(button) {
+  const d = button.dataset;
+  const label = d.menuLabel ?? '';
+  const ids = (d.careIds ?? '').split(',').filter(Boolean).map(Number);
+  const on = d.care === '1';
+
+  const menu = document.createElement('div');
+  menu.className = 'volmenu';
+  const items = [];
+  if (d.coverSlot !== undefined) {
+    items.push(`<button data-act="cover">サムネ変更</button>`);
+  }
+  if (d.split !== undefined) {
+    items.push(`<button data-act="split">巻ごとに分割</button>`);
+  }
+  if (ids.length) {
+    items.push(`<button class="care" data-act="care">${on ? '要ケアを外す' : '要ケアにする'}</button>`);
+  }
+  menu.innerHTML = items.join('');
+
+  const card = button.closest('.vol');
+  card.appendChild(menu);
+  /**
+   * **右端の板では左へ伸ばす。** 板は 92px 幅で品書きは 148px あるので、
+   * そのまま左端に合わせると最後の列で画面の外へ出て押せない。
+   * 貼ってから実測する — 格子の列数は画面幅で変わるので、数えても当たらない
+   */
+  const box = menu.getBoundingClientRect();
+  const limit = ($('detail') ?? document.documentElement).getBoundingClientRect().right;
+  if (box.right > limit - 4) menu.classList.add('right');
+
+  button.setAttribute('aria-expanded', 'true');
+  volMenuOpen = { button, menu };
+
+  menu.addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b) return;
+    closeVolMenu();
+    if (b.dataset.act === 'cover') openPicker({ slot: d.coverSlot, label });
+    else if (b.dataset.act === 'split') openSplit(Number(d.split), label);
+    else await setCare(ids, !on);
+  });
+}
+
+// 外を押したら閉じる。**capture で拾う** — 中身を貼り直す click より先に閉じないと、
+// 消えた DOM を掴んだまま残る
+document.addEventListener('click', (e) => {
+  if (!volMenuOpen) return;
+  const t = e.target instanceof Element ? e.target : null;
+  if (t && (t.closest('.volmenu') || t.closest('.th.dots'))) return;
+  closeVolMenu();
+}, true);
 
 /**
  * 表紙を「読む」入口にする。**分割書庫は先頭だけを開く** — 1 巻が 3 本に割れている時、
@@ -687,6 +846,8 @@ const readCover = (files, inner, label) =>
 function volHtml(v) {
   const marks = [];
   if (v.duplicate) marks.push('<span class="badge warn">複</span>');
+  // 人が付けた印。**機械の札より先に出す** — 自分で付けたものが一番早く目に入るべき
+  if (v.files.some((f) => f.care)) marks.push('<span class="badge care">ケ</span>');
   if (v.coverPinned) marks.push('<span class="badge pinned">選</span>');
   if (v.completed) marks.push('<span class="badge done">完</span>');
   const inner = `${coverHtml(v.coverUrl, v.label)}
@@ -717,8 +878,11 @@ function volHtml(v) {
  */
 function sideVolHtml(s) {
   const label = s.label || '本編';
+  const marks = [];
+  if (s.files.some((f) => f.care)) marks.push('<span class="badge care">ケ</span>');
+  if (s.coverPinned) marks.push('<span class="badge pinned">選</span>');
   const inner = `${coverHtml(s.coverUrl, '')}
-      ${s.coverPinned ? '<span class="badges"><span class="badge pinned">選</span></span>' : ''}`;
+      ${marks.length ? `<span class="badges">${marks.join('')}</span>` : ''}`;
   return volCardHtml(readCover(s.files, inner, label), label, s.files, { slot: s.coverSlot });
 }
 
@@ -996,6 +1160,7 @@ function detailHtml(d) {
   <div class="vols">${line.join('')}</div>` : ''}
   <div id="splitbox">${splitBoxHtml()}</div>
   ${sideSectionHtml(d)}
+  ${careSectionHtml(d)}
   ${dupSectionHtml(d)}
   ${d.loose.length ? `<h3 class="sec">巻数も呼び名も読めなかったファイル</h3>
     <div class="filelist">${d.loose.map((f) => fileRowHtml(f)).join('')}</div>` : ''}
@@ -1180,11 +1345,18 @@ function renameBoxHtml(d) {
   </div>`;
 }
 
-/** ファイル 1 本の行。保存と、PC なら置き場所を開く口を添える */
+/**
+ * ファイル 1 本の行。保存と、要ケアの付け外しと、PC なら置き場所を開く口を添える。
+ *
+ * **ここは畳まない。** 板と違って 1 行 = ファイル 1 本なので、押す先が曖昧にならない。
+ * 同じ巻に別版が 2 本ある時、どちらがひどいのかを言えるのはこの一覧だけ
+ */
 function fileRowHtml(f) {
   return `<div class="row">
     <span class="nm"><a href="/api/files/${f.id}/download">${esc(f.relPath)}</a></span>
     <span class="sz">${mb(f.size)}</span>
+    <button class="mini${f.care ? ' care-on' : ''}" data-care-file="${f.id}"
+      data-care="${f.care ? '1' : '0'}">要ケア</button>
     ${caps.reveal.available ? `<button class="mini pc-only" data-reveal-file="${f.id}">場所</button>` : ''}
   </div>`;
 }
@@ -1201,6 +1373,84 @@ function sideSectionHtml(d) {
   if (!d.side || !d.side.length) return '';
   return `<h3 class="sec">別巻 <span style="font-weight:400">— 巻には数えていません</span></h3>
   <div class="vols">${d.side.map(sideVolHtml).join('')}</div>`;
+}
+
+/**
+ * 印の付いた本を集める。**板の並びの順に拾う** — 巻 → 別巻 → 巻数不明 で、
+ * 上の数直線をそのまま下へ写した形になる。
+ */
+function careItems(d) {
+  const out = [];
+  for (const v of d.volumes) for (const f of v.files) if (f.care) out.push({ label: v.label, f });
+  for (const s of d.side) for (const f of s.files) if (f.care) out.push({ label: s.label || '本編', f });
+  for (const f of d.loose) if (f.care) out.push({ label: '巻数不明', f });
+  return out;
+}
+
+/**
+ * 要ケアの本を並べる節。**メモを書くのはここ 1 箇所。**
+ *
+ * 板の下に入力欄をぶら下げると格子の行が丸ごと伸びて並びが崩れる。印の付いた本だけを
+ * 1 節にまとめれば、そこが「あとから拾う」時に見る場所そのものになる。
+ *
+ * **要確認とは別の節にする。** 要確認は機械が気付いた綻びで、直せないものも混ざる。
+ * ここに並ぶのは全部、自分で中を見て印を付けたものだけ。
+ */
+function careSectionHtml(d) {
+  const items = careItems(d);
+  if (!items.length) return '';
+  return `<h3 class="sec">要ケア <span style="font-weight:400">— ${items.length} 冊</span></h3>
+  <div class="carebox">
+    ${items.map(({ label, f }) => `<div class="carerow">
+      <div class="hd"><b>${esc(label)}</b><span class="nm">${esc(f.relPath)}</span>
+        <button class="mini" data-care-file="${f.id}" data-care="1">外す</button></div>
+      <input type="text" data-care-note="${f.id}" value="${esc(f.careNote ?? '')}"
+        placeholder="どうしたい？ (空でも可)">
+    </div>`).join('')}
+    <div class="carenote-hint">メモは打った端から残ります。外してもメモは消えません</div>
+  </div>`;
+}
+
+/**
+ * 「ケアが必要」の印を立てる / 外す。**ファイル 1 本ずつ投げる** — 1 枚の板に 2 本
+ * ぶら下がっていても、DB の単位はファイルのままにしておく (db.ts の files.care)。
+ *
+ * 押した後は板も棚も貼り直す。板の札 (ケ) と棚の札 (要ケア) が同じ印を見ているので、
+ * 片方だけ直すと「付けたのに棚では分からない」という見え方になる。
+ */
+async function setCare(ids, on) {
+  try {
+    for (const id of ids) {
+      await api(`/api/files/${id}/care`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ care: on }),
+      });
+    }
+    toast(on ? '要ケアにしました' : '要ケアを外しました');
+    if (readerOpen() && ids.includes(reader.fileId)) rdSetCare(on);
+    if (lastDetail) await openDetail(lastDetail.id, 'keep');
+    await loadGrid();
+  } catch (e) {
+    toast('失敗: ' + e.message, 5000);
+  }
+}
+
+/**
+ * メモだけ書き直す。**貼り直さない** — 打っている最中に中身を差し替えると
+ * 入力欄から指が離れる。印そのものは動かないので、画面で直すところも無い。
+ */
+async function saveCareNote(id, note) {
+  try {
+    await api(`/api/files/${id}/care`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ care: true, note }),
+    });
+    // 貼り直さないぶん、控えの方も合わせておく (次に貼り直した時に打った内容が戻らないように)
+    if (lastDetail) {
+      for (const { f } of careItems(lastDetail)) if (f.id === id) f.careNote = note.trim() || null;
+    }
+  } catch (e) {
+    toast('メモを残せませんでした: ' + e.message, 5000);
+  }
 }
 
 /** 同じ巻に複数のファイルがある巻を並べる。多い作品があるので頭から 12 巻だけ出す */
@@ -1272,16 +1522,39 @@ function wireDetail(d) {
     }
   });
 
-  // 表紙を探して選ぶ。作品まるごとと、巻 1 つぶんの 2 つの入口がある
+  // 表紙を探して選ぶ。**作品まるごとの入口はここ。**
+  // 巻 1 つぶんは板の「···」の中 (openVolMenu)
   $('pick-open')?.addEventListener('click', () => openPicker(null));
-  $('detail').querySelectorAll('button[data-cover-slot]').forEach((b) => {
-    b.addEventListener('click', () => openPicker({ slot: b.dataset.coverSlot, label: b.dataset.coverLabel }));
+
+  // 板の操作は「···」1 つに畳んである。サムネ変更・巻ごとに分割・要ケアは全部この中
+  closeVolMenu();
+  $('detail').querySelectorAll('button.th.dots').forEach((b) => {
+    b.addEventListener('click', () => {
+      const same = volMenuOpen && volMenuOpen.button === b;
+      closeVolMenu();
+      if (!same) openVolMenu(b);
+    });
   });
 
   // 合本を巻ごとに分ける。**下見を見てから押す**二段 (splitBoxHtml)
   renderSplitBox();
-  $('detail').querySelectorAll('button[data-split]').forEach((b) => {
-    b.addEventListener('click', () => openSplit(Number(b.dataset.split), b.dataset.splitLabel));
+
+  // ファイル 1 本ずつの要ケア。一覧の行と、要ケアの節の「外す」が同じ道を通る
+  $('detail').querySelectorAll('button[data-care-file]').forEach((b) => {
+    b.addEventListener('click', () => setCare([Number(b.dataset.careFile)], b.dataset.care !== '1'));
+  });
+
+  // メモ。**打ち終わりを待ってから送る** (1 文字ごとに投げない)
+  $('detail').querySelectorAll('input[data-care-note]').forEach((el) => {
+    let timer = null;
+    const flush = () => {
+      clearTimeout(timer);
+      timer = null;
+      saveCareNote(Number(el.dataset.careNote), el.value);
+    };
+    el.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(flush, 600); });
+    // 板を閉じる時に打ちかけを落とさない
+    el.addEventListener('blur', () => { if (timer) flush(); });
   });
 
   // 表紙を押したら読み始める
@@ -1814,6 +2087,8 @@ const reader = {
   barTimer: null,
   seq: 0,
   vertTick: 0,
+  /** 今開いている本に「ケアが必要」の印が立っているか (帯のボタンの見た目) */
+  care: false,
 };
 
 const readerOpen = () => !$('rd').hidden;
@@ -2063,6 +2338,16 @@ function rdMeta() {
   $('rd-mode').textContent = reader.mode === 'rtl' ? '縦読み' : '右から左';
 }
 
+/**
+ * 帯の「要ケア」の見た目を今の印に合わせる。**押した結果はここだけで返す** —
+ * 読んでいる最中に板ごと貼り直すと、下で走る描き直しでページが飛ぶ
+ */
+function rdSetCare(on) {
+  reader.care = on;
+  $('rd-care').dataset.on = on ? '1' : '0';
+  $('rd-care').textContent = on ? '要ケア 済' : '要ケア';
+}
+
 function rdBar(on) {
   clearTimeout(reader.barTimer);
   $('rd-bar').dataset.off = on ? '0' : '1';
@@ -2094,7 +2379,17 @@ async function openReader(fileId, mode = 'push') {
   $('rd-hit').style.display = 'none';
   stage.innerHTML = '<div class="rd-msg"><b>書庫を開いています</b>初めて開く本は少し待ちます</div>';
   rdMeta();
+  rdSetCare(false);
   rdBar(true);
+
+  /**
+   * 今の印を聞きに行く。**ページの読み込みとは別に走らせる** — 書庫を開くのに
+   * 20 秒かかる本があるので、待たせると帯のボタンがずっと嘘を出したままになる。
+   * 途中で別の本に移っていたら捨てる
+   */
+  api(`/api/files/${fileId}/care`)
+    .then((c) => { if (reader.fileId === fileId && readerOpen()) rdSetCare(c.care); })
+    .catch(() => { /* 印が分からなくても本は読める */ });
 
   try {
     const r = await api(`/api/files/${fileId}/pages`);
@@ -2145,6 +2440,8 @@ function rdSetMode(m) {
 (function wireReader() {
   $('rd-close').addEventListener('click', closeReader);
   $('rd-mode').addEventListener('click', () => rdSetMode(reader.mode === 'rtl' ? 'vert' : 'rtl'));
+  // 帯は 2.5 秒で引っ込むので、押したら出し直す (続けて外したくなることがある)
+  $('rd-care').addEventListener('click', () => { rdBar(true); setCare([reader.fileId], !reader.care); });
   $('rd-slider').addEventListener('input', () => {
     reader.page = Math.max(0, Math.min(reader.pages.length - 1, Number($('rd-slider').value) - 1));
     reader.half = null;
@@ -2311,10 +2608,12 @@ let pressedOnBackdrop = false;
 $('sheet').addEventListener('pointerdown', (e) => { pressedOnBackdrop = e.target === $('sheet'); });
 $('sheet').addEventListener('click', (e) => { if (pressedOnBackdrop && e.target === $('sheet')) closeSheet(); });
 $('sheet-close').addEventListener('click', closeSheet);
-// 読んでいる時の Esc は**読むのを閉じる**。板より上に重なっているので先に受ける
+// 読んでいる時の Esc は**読むのを閉じる**。板より上に重なっているので先に受ける。
+// 品書きはさらにその上なので、開いていれば一番先に受ける (開けただけで板ごと消えない)
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if (readerOpen()) closeReader();
+  if (volMenuOpen) closeVolMenu();
+  else if (readerOpen()) closeReader();
   else if (sheetOpen()) closeSheet();
 });
 
@@ -2336,6 +2635,7 @@ toggle('f-gaps', (on) => { state.gaps = on; });
 toggle('f-behind', (on) => { state.behind = on; });
 toggle('f-nocover', (on) => { state.needsCover = on; });
 toggle('f-issues', (on) => { state.issues = on; });
+toggle('f-care', (on) => { state.care = on; });
 toggle('f-done', (on) => {
   state.completed = on ? true : undefined;
   if (on) { $('f-ongoing').setAttribute('aria-pressed', 'false'); }
@@ -2344,7 +2644,7 @@ toggle('f-ongoing', (on) => {
   state.completed = on ? false : undefined;
   if (on) { $('f-done').setAttribute('aria-pressed', 'false'); }
 });
-$('sort').addEventListener('change', (e) => { state.sort = e.target.value; loadGrid(); });
+$('sort').addEventListener('change', (e) => { state.sort = e.target.value; saveSort(state.sort); loadGrid(); });
 
 // スマホでだけ出る ⋯。棚の読み直しと表紙の取得を畳んでおく (PC では常に出ている)
 $('more').addEventListener('click', () => {
@@ -2376,6 +2676,8 @@ $('scan').addEventListener('click', async () => {
 $('names').addEventListener('click', () => openNamer());
 
 (async () => {
+  // 覚えている並び順を選択欄に戻す。**loadGrid より先** — 出てくる棚と欄の表示がずれる
+  $('sort').value = state.sort;
   await Promise.all([loadStats(), loadNews(), loadGrid()]);
   const m = location.hash.match(/^#\/series\/(\d+)/);
   const r = location.hash.match(/^#\/read\/(\d+)/);

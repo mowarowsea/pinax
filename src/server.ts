@@ -94,7 +94,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   app.get<{
     Querystring: {
       q?: string; gaps?: string; completed?: string; root?: string; needsCover?: string;
-      behind?: string; missing?: string; issues?: string;
+      behind?: string; missing?: string; issues?: string; care?: string;
       sort?: string; limit?: string; offset?: string;
     };
   }>('/api/series', async (req) => {
@@ -116,6 +116,8 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
         : qs.issues === '1' || qs.issues === 'any' || qs.issues === 'true'
           ? 'any'
           : undefined,
+      // 人が「ケアが必要」と印を付けたファイルを抱えている作品だけ
+      care: bool(qs.care) ?? false,
       sort: (qs.sort as 'title' | 'author' | 'added' | 'volumes' | 'updated' | undefined) ?? 'title',
       limit: qs.limit ? Number(qs.limit) : undefined,
       offset: qs.offset ? Number(qs.offset) : undefined,
@@ -631,6 +633,37 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     }
     return cachedFetch(db, cfg, { provider: req.query.provider ?? 'proxy', url });
   });
+
+  // ---- ケアが必要 ---------------------------------------------------------
+
+  /**
+   * 「ケアが必要」の印を立てる / 外す。**ファイル 1 本ずつが単位** — 壊れているのも
+   * スキャンがひどいのも書庫 1 本の話で、巻や作品にまとめると直しようが無くなる。
+   *
+   * `note` を省いた呼びではメモに触らない (印だけの付け外し)。メモだけ書き直したい時は
+   * `care` を今の値のまま添えて投げる。**外してもメモは消さない** (db.setCare の註)。
+   */
+  /**
+   * 今の印を聞く。**読む画面が直接開かれた時のため** (`#/read/5`) — 作品の板を
+   * 通っていないと、画面は印が立っているかどうかを知らないまま帯のボタンを描くことになる
+   */
+  app.get<{ Params: { id: string } }>('/api/files/:id/care', async (req) => {
+    const row = db.getCare(Number(req.params.id));
+    if (!row) throw new HttpError(404, 'そのファイルはありません');
+    return row;
+  });
+
+  app.post<{ Params: { id: string }; Body: { care?: boolean; note?: string | null } }>(
+    '/api/files/:id/care',
+    async (req) => {
+      const id = Number(req.params.id);
+      if (!db.getCare(id)) throw new HttpError(404, 'そのファイルはありません');
+      const v = req.body?.care;
+      if (typeof v !== 'boolean') throw new HttpError(400, 'care は true / false です');
+      const note = req.body && 'note' in req.body ? (req.body.note ?? null) : undefined;
+      return { ok: true, ...db.setCare(id, v, note)! };
+    }
+  );
 
   // ---- ダウンロード -------------------------------------------------------
 
