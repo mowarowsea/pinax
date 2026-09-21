@@ -6,7 +6,7 @@ import fastifyStatic from '@fastify/static';
 import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { checkOwned, getSeriesDetail, listSeries, type OwnQuery } from './catalog.js';
-import { enrichSeries, fillMissingCovers, fillVolumeCovers } from './bib/enrich.js';
+import { fillVolumeCovers } from './bib/enrich.js';
 import { applyPick, coverSlotOf, searchCandidates, setVolumeCover } from './bib/pick.js';
 import { slotKey, slotLabel } from './cover-slot.js';
 import { cacheThumbnail, imageHostAllowed } from './bib/covers.js';
@@ -320,18 +320,9 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
 
   // ---- 書誌・表紙 ---------------------------------------------------------
 
-  app.post<{ Params: { id: string }; Body: { refresh?: boolean } }>('/api/series/:id/enrich', async (req) => {
-    return enrichSeries(db, cfg, Number(req.params.id), { refresh: req.body?.refresh === true });
-  });
-
-  app.post<{ Body: { seriesLimit?: number } }>('/api/covers/fill', async (req) => {
-    const results = await fillMissingCovers(db, cfg, { seriesLimit: req.body?.seriesLimit ?? 5 });
-    return { results };
-  });
-
   /**
    * 作品の中で抜けている巻の表紙を埋める。
-   * `/api/covers/fill` が「表紙の無い作品」を見るのに対し、こちらは
+   * 巡回の fillMissingCovers が「表紙の無い作品」を見るのに対し、こちらは
    * **ISBN は分かっているのに表紙が無い巻**を見る (楽天の鍵が要る)。
    */
   app.post<{ Body: { limit?: number } }>('/api/covers/fill-volumes', async (req) => {

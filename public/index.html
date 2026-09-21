@@ -480,7 +480,6 @@ button.cover { border: 0; padding: 0; font: inherit; }
     <button class="btn" id="more" aria-expanded="false" aria-controls="acts" aria-label="棚の操作">···</button>
     <div class="acts" id="acts">
       <button class="btn" id="scan">棚を読み直す</button>
-      <button class="btn" id="fill">表紙を進める</button>
       <button class="btn" id="names">名前を作る</button>
     </div>
   </div>
@@ -748,7 +747,7 @@ function shelfLineHtml(d) {
   if (!sh) return '';
   const src = pub && pub.providers && pub.providers.length ? pub.providers.join('・').toUpperCase() : '書誌';
   if (sh.status === 'unknown') {
-    return `<div class="shelfline quiet">発行状況は未確認<small>「書誌と表紙を取り直す」で外に聞きます</small></div>`;
+    return `<div class="shelfline quiet">発行状況は未確認<small>「表紙を探して選ぶ」でシリーズを選ぶと分かります</small></div>`;
   }
   if (sh.status === 'behind') {
     return `<div class="shelfline">続きが出ています — 第${sh.ownedMax + 1}〜${sh.publishedMax}巻が未購入
@@ -1014,7 +1013,6 @@ function detailHtml(d) {
     ${completedSwitchHtml(d)}
     ${pickLineHtml(d)}
     <div class="d-actions">
-      <button class="btn" id="enrich" data-id="${d.id}">書誌と表紙を取り直す</button>
       <button class="btn" id="pick-open">表紙を探して選ぶ</button>
       <button class="btn" id="rn-open">名前を直す</button>
       ${caps.reveal.available ? '<button class="btn pc-only" id="reveal">エクスプローラで開く</button>' : ''}
@@ -1255,24 +1253,6 @@ async function openDetail(id, mode = 'push') {
 function wireDetail(d) {
   const id = d.id;
 
-  $('enrich')?.addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spin"></span> 取得中';
-    try {
-      const r = await api(`/api/series/${id}/enrich`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh: true }),
-      });
-      toast(`NDL ${r.recordCount} 件 / 書誌 ${r.bibWritten} / 表紙 ${r.coversWritten} 枚`);
-      await openDetail(id, 'keep');
-      await loadGrid();
-    } catch (err) {
-      toast('失敗: ' + err.message, 5000);
-      btn.disabled = false;
-      btn.textContent = '書誌と表紙を取り直す';
-    }
-  });
-
   // 完結の入り / 切り
   $('sw-completed')?.addEventListener('change', async (e) => {
     const el = e.currentTarget;
@@ -1313,7 +1293,7 @@ function wireDetail(d) {
   $('pick-clear')?.addEventListener('click', async () => {
     try {
       await api(`/api/series/${id}/cover-pick`, { method: 'DELETE' });
-      toast('自動に戻しました。「書誌と表紙を取り直す」で当て直せます', 5000);
+      toast('自動に戻しました。「表紙を探して選ぶ」で当て直せます', 5000);
       await openDetail(id, 'keep');
     } catch (e) {
       toast('失敗: ' + e.message, 5000);
@@ -2391,22 +2371,6 @@ $('scan').addEventListener('click', async () => {
   } catch (e) { toast('失敗: ' + e.message, 5000); }
   b.disabled = false;
   b.textContent = '棚を読み直す';
-});
-
-$('fill').addEventListener('click', async () => {
-  const b = $('fill');
-  b.disabled = true;
-  b.innerHTML = '<span class="spin"></span> 取得中';
-  try {
-    const { results } = await api('/api/covers/fill', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ seriesLimit: 5 }),
-    });
-    const n = results.reduce((a, r) => a + r.coversWritten, 0);
-    toast(n ? `${results.length} 作品 / 表紙 ${n} 枚を焼きました` : `${results.length} 作品を見ましたが表紙は取れませんでした`, 5000);
-    await Promise.all([loadGrid(), loadStats()]);
-  } catch (e) { toast('失敗: ' + e.message, 5000); }
-  b.disabled = false;
-  b.textContent = '表紙を進める';
 });
 
 $('names').addEventListener('click', () => openNamer());

@@ -181,7 +181,7 @@ pinax が読めるのはこの形:
 
 選んだ結果は `series_pick` に残り、**次からの自動の取り直しもその系列だけを見る**。
 板ごとに選んだ表紙には印が立ち (`covers.pinned`)、
-**「書誌と表紙を取り直す」でも巡回でも上書きされない** — 完結の指定と同じで、
+**巡回でも上書きされない** — 完結の指定と同じで、
 一度下した人の判断を機械が黙って覆さない。「自動に戻す」で外せる。
 
 系列は**提供元をまたいで 1 つに束ねる**。NDL も楽天も Google も同じシリーズを知っているのが
@@ -722,7 +722,6 @@ GET    /api/series?q=&gaps=&behind=&missing=&completed=&needsCover=&issues=&sort
                                         updated は「最後に巻が増えた日」の降順 (added は作品の登録日)
 GET    /api/missing?kind=ahead|gap|all   持っていない巻の一覧 (ahead=買い逃し / gap=取りこぼし)
 GET    /api/series/:id                  巻・ファイル・書誌つきの詳細
-POST   /api/series/:id/enrich           書誌と表紙を取り直す
 POST   /api/series/:id/completed        完結を指定 ({ completed: true|false|null })
                                         null は指定を外してフォルダの (完) に従う状態へ戻す
 POST   /api/series/:id/rename           作品フォルダの名前を付け替える
@@ -733,7 +732,6 @@ POST   /api/own                         所持の問い合わせ (要トーク�
 GET    /api/events?unread=1             お知らせ
 POST   /api/events/read                 既読にする
 POST   /api/scan                        棚の読み直し ({ root } で 1 つだけ)
-POST   /api/covers/fill                 表紙の無い「作品」を少しずつ埋める
 POST   /api/covers/fill-volumes         作品の中で抜けている「巻」を埋める (楽天の鍵が要る)
 GET    /api/series/:id/cover-search?q=&author=&provider=all|ndl|rakuten
                                         書影の候補を探し、シリーズの束にまとめて返す
