@@ -1005,7 +1005,7 @@ function splitBoxHtml() {
     <div class="spplan">
       <div class="spfrom">${esc(s.plan.from)}</div>
       ${s.plan.parts.map((x) => `<div class="spto">${esc(x.name)}
-        <span class="spmeta">${x.pages} ページ</span></div>`).join('')}
+        ${x.pages ? `<span class="spmeta">${x.pages} ページ</span>` : ''}</div>`).join('')}
     </div>
     <div class="spacts"><button class="btn go" id="sp-go">分割する</button>${close}</div>
   </div>`;

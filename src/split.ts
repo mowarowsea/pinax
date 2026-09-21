@@ -59,6 +59,13 @@ export interface SplitPart {
   members: string[];
   /** 新しい書庫の中でどういう名前にするか。members と同じ並び */
   as: string[];
+  /**
+   * 出来上がる本のページ数。**中身が書庫の合本では 0 = 分からない。**
+   *
+   * あちらの members は「取り出す書庫 1 つ」なので数えると必ず 1 になり、
+   * 画面に「1 ページ」と出る。中を開くまで本当のページ数は分からないのだから、
+   * 嘘の数を出すより黙っている方がいい (`SplitPlan.pages` も同じ理由で 0)。
+   */
   pages: number;
 }
 
@@ -302,7 +309,10 @@ export async function planSplit(db: Db, cfg: Config, fileId: number): Promise<Sp
     if (fs.existsSync(path.join(t.dir, full))) {
       return { ...base, ok: false, reason: `同じ名前のファイルが既にあります: ${full}`, parts: [] };
     }
-    parts.push({ volume: p.volume, name: full, members: p.members, as: p.as, pages: p.members.length });
+    parts.push({
+      volume: p.volume, name: full, members: p.members, as: p.as,
+      pages: g.kind === 'nested' ? 0 : p.members.length,
+    });
   }
 
   return { ...base, ok: true, reason: null, parts };

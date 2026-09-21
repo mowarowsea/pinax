@@ -146,7 +146,7 @@ test('CRC は zlib と同じ値になる', async () => {
  * 見るのは 4 つ: 出来たファイルの名前、中のページ、原本が棚から居なくなったこと、
  * 原本が attic に残っていること。どれが欠けても「静かに壊れた」になる。
  */
-async function shelf(): Promise<{
+async function shelf(build?: (dest: string) => void): Promise<{
   dir: string; cfg: Config; db: Db; fileId: number; series: string; name: string;
 }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pinax-split-'));
@@ -156,11 +156,14 @@ async function shelf(): Promise<{
   fs.mkdirSync(folder, { recursive: true });
 
   const name = '[試作者] 試し作品 第01-02巻.zip';
-  const w = new ZipWriter(path.join(folder, name));
-  w.addStored('第01巻/001.jpg', Buffer.from('1-1'));
-  w.addStored('第01巻/002.jpg', Buffer.from('1-2'));
-  w.addStored('第02巻/001.jpg', Buffer.from('2-1'));
-  w.close();
+  if (build) build(path.join(folder, name));
+  else {
+    const w = new ZipWriter(path.join(folder, name));
+    w.addStored('第01巻/001.jpg', Buffer.from('1-1'));
+    w.addStored('第01巻/002.jpg', Buffer.from('1-2'));
+    w.addStored('第02巻/001.jpg', Buffer.from('2-1'));
+    w.close();
+  }
 
   const dataDir = path.join(dir, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
@@ -232,6 +235,58 @@ test('同じ名前が既にあれば、何もせずに断る', async () => {
     await assert.rejects(() => runSplit(t.db, t.cfg, t.fileId), /既にあります/);
     // 断った後も原本はそのまま
     assert.equal(fs.existsSync(path.join(folder, t.name)), true);
+  } finally {
+    t.db.close();
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test('中身が書庫の合本は、取り出すだけで分割できる', async () => {
+  // 中に書庫が 2 つ入った合本を組む。zip in zip なら手で作れる
+  const inner = (pages: [string, string][]): Buffer => {
+    const at = path.join(os.tmpdir(), `pinax-inner-${Math.random().toString(36).slice(2)}.zip`);
+    const w = new ZipWriter(at);
+    for (const [n, body] of pages) w.addStored(n, Buffer.from(body));
+    w.close();
+    const buf = fs.readFileSync(at);
+    fs.rmSync(at, { force: true });
+    return buf;
+  };
+
+  const t = await shelf((dest) => {
+    const w = new ZipWriter(dest);
+    w.addStored('試し作品 第01巻.zip', inner([['001.jpg', '1-1'], ['002.jpg', '1-2']]));
+    w.addStored('試し作品 第02巻.zip', inner([['001.jpg', '2-1']]));
+    w.close();
+  });
+  const folder = path.join(t.dir, 'shelf', t.series);
+  try {
+    const plan = await planSplit(t.db, t.cfg, t.fileId);
+    assert.equal(plan.kind, 'nested');
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.parts.map((p) => p.name), [
+      '[試作者] 試し作品 第01巻.zip',
+      '[試作者] 試し作品 第02巻.zip',
+    ]);
+    /**
+     * **ページ数は言わない。** 取り出す書庫 1 つを数えて「1 ページ」と出すと、
+     * 4 巻ぶんの合本が「どれも 1 ページ」に見えて、壊れたように読める
+     */
+    assert.deepEqual(plan.parts.map((p) => p.pages), [0, 0]);
+    assert.equal(plan.pages, 0);
+
+    const r = await runSplit(t.db, t.cfg, t.fileId);
+    const tmp = path.join(t.cfg.dataDir, 'pages');
+    const one = path.join(folder, r.made[0]);
+    const idx = await readPageIndex(one, tmp);
+    assert.deepEqual(idx.pages.map((p) => p.name), ['001.jpg', '002.jpg']);
+    assert.deepEqual(await readPage(one, '002.jpg', tmp), Buffer.from('1-2'));
+
+    const two = await readPageIndex(path.join(folder, r.made[1]), tmp);
+    assert.equal(two.pages.length, 1);
+
+    assert.equal(fs.existsSync(path.join(folder, t.name)), false);
+    assert.equal(fs.existsSync(r.attic), true);
   } finally {
     t.db.close();
     fs.rmSync(t.dir, { recursive: true, force: true });
