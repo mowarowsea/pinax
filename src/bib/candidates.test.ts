@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  byVolumeOf, groupCandidates, imageCandidatesOf, ndlCandidate, splitCandidateTitle, tidyAuthorName,
-  type Candidate,
+  byVolumeOf, groupCandidates, imageCandidatesOf, ndlCandidate, rakutenCandidate, splitCandidateTitle,
+  tidyAuthorName, type Candidate,
 } from './candidates.js';
 import type { NdlRecord } from './ndl.js';
 
@@ -221,4 +221,82 @@ test('コンマの無いものには触らない', () => {
   assert.equal(tidyAuthorName('村田雄介 ONE'), '村田雄介 ONE');
   assert.equal(tidyAuthorName(null), null);
   assert.equal(tidyAuthorName('  '), null);
+});
+
+/** 楽天の item を 1 つ。ここから先は**束の並びを見てから巻を決める**話 */
+function rakuten(title: string): Candidate {
+  return rakutenCandidate(
+    {
+      title,
+      seriesName: null,
+      author: '緑華野菜子',
+      publisher: 'KADOKAWA',
+      salesDate: null,
+      isbn: null,
+      imageUrl: null,
+      itemUrl: null,
+    },
+    600
+  );
+}
+
+test('巻の印が閉じ括弧の内側にあっても読む', () => {
+  // 楽天と Google の実物 (2026-09-22)。ここを読まないと、束は 10 件できているのに
+  // 画面には「巻の並びなし」と出る
+  assert.deepEqual(splitCandidateTitle('本好きの下剋上第二部 「本のためなら巫女になる! 第6巻」'), {
+    base: '本好きの下剋上第二部 「本のためなら巫女になる!」',
+    volume: 6,
+  });
+});
+
+/**
+ * 巻が**書名の真ん中**に入る形。楽天と Google がマイノグーラをこう返してくる
+ * (2026-09-22 に http_cache から写した)。`splitCandidateTitle` では拾えない —
+ * 拾えるように緩めれば `ゾン100` が削れるので、**束の並びを見てから決める**。
+ */
+const MYNOGHRA: Candidate[] = [
+  rakuten('異世界黙示録マイノグーラ　〜破滅の文明で始める世界征服〜　1'),
+  rakuten('異世界黙示録マイノグーラ　〜破滅の文明で始める世界征服〜　2'),
+  rakuten('異世界黙示録マイノグーラ 03 〜破滅の文明で始める世界征服〜'),
+  rakuten('異世界黙示録マイノグーラ 04 〜破滅の文明で始める世界征服〜'),
+];
+
+test('真ん中に巻が入っていても 1 つの束にする', () => {
+  // **鍵が数字だけ違って並んでいる = それは巻。**
+  // 直す前は 1・2巻の束の横に 3巻と 4巻が 1 本ずつ並んでいた
+  const groups = groupCandidates(MYNOGHRA);
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].volumes, [1, 2, 3, 4]);
+  // 見出しからも巻の数字は落ちる
+  assert.ok(!/\d/.test(groups[0].title), groups[0].title);
+});
+
+test('末尾に足された副題は別の束のまま', () => {
+  // 【分冊版】は 54 巻まである別の出し方。混ぜると棚に分冊版の表紙が並ぶ
+  const groups = groupCandidates([
+    ...MYNOGHRA,
+    rakuten('異世界黙示録マイノグーラ　〜破滅の文明で始める世界征服〜【分冊版】　28'),
+    rakuten('異世界黙示録マイノグーラ　〜破滅の文明で始める世界征服〜【分冊版】　29'),
+  ]);
+  assert.equal(groups.length, 2);
+  assert.ok(groups.some((g) => g.title.includes('【分冊版】')));
+});
+
+test('自前の数直線を持っている束は動かさない', () => {
+  // `血界戦線back2back` の `2` を巻と読むと、束丸ごと無印へ流れ込む。
+  // 1・3・5・10巻を抱えているのだから、あの `2` は書名の一部でしかありえない
+  const groups = groupCandidates(KEKKAI);
+  assert.ok(groups.some((g) => g.title === '血界戦線Back 2 Back'), 'Back 2 Back が無印へ流れた');
+});
+
+test('真ん中だけ抜けた書名は同じ作品として畳む', () => {
+  // 提供元によって正式名をどこまで書くかが違う。頭と尻がそのままで
+  // 真ん中だけが抜けているのは、**提供元が省いた形**の印
+  const groups = groupCandidates([
+    rakuten('本好きの下剋上　第二部 「本のためなら巫女になる！ 第4巻」'),
+    rakuten('本好きの下剋上　第二部 「本のためなら巫女になる！ 第5巻」'),
+    rakuten('本好きの下剋上〜司書になるためには手段を選んでいられません〜第二部 「本のためなら巫女になる！ 第3巻」'),
+  ]);
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].volumes, [3, 4, 5]);
 });

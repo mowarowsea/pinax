@@ -1,5 +1,5 @@
 import { yearOf } from '../published.js';
-import { seriesKeyOf } from '../volume.js';
+import { seriesKeyOf, stripCompletionMark } from '../volume.js';
 import { type GoogleRecord } from './google.js';
 import { ndlThumbnailUrl, type NdlRecord } from './ndl.js';
 import { rakutenImageUrl, type RakutenRecord } from './rakuten.js';
@@ -148,7 +148,9 @@ export function tidyAuthorName(raw: string | null | undefined): string | null {
  * **裸の数字は前に空白がある時だけ巻と読む。** `ゾン100` を巻数扱いしないため。
  */
 export function splitCandidateTitle(raw: string): { base: string; volume: number | null } {
-  const s = String(raw ?? '').trim();
+  // 完結マークを先に剥ぐ。これが尾に残っていると巻の括弧が末尾に来なくなり、
+  // Google の `魔法陣グルグル2(21)(完)` が鍵の上で `魔法陣グルグル221` に潰れる
+  const s = stripCompletionMark(String(raw ?? '')).text.trim();
   if (!s) return { base: '', volume: null };
 
   // 副題を落とす前に括弧の巻を見る。`血界戦線（10）` は副題を持たない
@@ -160,10 +162,18 @@ export function splitCandidateTitle(raw: string): { base: string; volume: number
 
   const body = stripSubtitle(s);
 
-  const kan = body.match(/^(.*?)[\s　]*第?[\s　]*([0-9０-９]{1,4})[\s　]*巻[\s　]*$/);
+  // 巻の印が**閉じ括弧の内側**に入る形を許す。楽天と Google がこう書いてくる:
+  //
+  //   本好きの下剋上第二部 「本のためなら巫女になる! 第6巻」
+  //
+  // 閉じ括弧を読まないと巻が 1 つも取れず、束は作れているのに「巻の並びなし」になる。
+  // 「巻」は見間違えようの無い印なので、その後ろの閉じ括弧だけは跨いでよい
+  const kan = body.match(
+    /^(.*?)[\s　]*第?[\s　]*([0-9０-９]{1,4})[\s　]*巻[\s　]*([」』】）)\]]*)[\s　]*$/
+  );
   if (kan) {
     const n = toNumber(kan[2]);
-    if (n !== null) return { base: kan[1].trim(), volume: n };
+    if (n !== null) return { base: (kan[1] + kan[3]).trim(), volume: n };
   }
 
   const bare = body.match(/^(.*\S)[\s　]+([0-9０-９]{1,3})$/);
@@ -308,6 +318,190 @@ function toGroup(key: string, items: Candidate[]): CandidateGroup {
 }
 
 /**
+ * 書名から**この巻数を表す数字の並び**を削る。束の見出しを作るためだけに使う。
+ *
+ * 末尾の 1 つだけ見るのは、頭の数字は作品名の一部だから (`20世紀少年`)。
+ * 削った跡の二重の空白と**空になった括弧**は詰めるが (`出会って5秒でバトル（１）【…】`)、
+ * **全角半角は元のまま残す** (表記は提供元のもの)。
+ */
+function stripVolumeDigits(title: string, volume: number): string {
+  const runs = [...title.matchAll(/[0-9０-９]+/g)].filter(
+    (m) => (m.index ?? 0) > 0 && toNumber(m[0]) === volume
+  );
+  const m = runs[runs.length - 1];
+  if (!m) return title;
+  const cut = title.slice(0, m.index) + title.slice((m.index ?? 0) + m[0].length);
+  return (
+    cut
+      .replace(/[(（\[［【「『][\s　]*[)）\]］】」』]/g, '')
+      .replace(/([\s　])[\s　]+/g, '$1')
+      .trim() || title
+  );
+}
+
+/** 鍵の中の「巻数かもしれない数字の並び」と、それを抜いた鍵 */
+interface NumberRun {
+  value: number;
+  /** その並びを抜いた鍵 */
+  skeleton: string;
+}
+
+/**
+ * 鍵の中の数字の並びを 1 つずつ抜いてみる。
+ *
+ * 抜かないものが 2 つある:
+ *
+ *   **頭にある数字**   `20世紀少年` と `21世紀少年` を同じ作品にしてしまう
+ *   **4 桁以上**      `機動戦士ガンダム0080` と `0083`、`このライトノベルがすごい2024` は巻ではない
+ */
+function numberRunsOf(key: string): NumberRun[] {
+  const out: NumberRun[] = [];
+  for (const m of key.matchAll(/\d+/g)) {
+    const at = m.index ?? 0;
+    if (at === 0 || m[0].length > 3) continue;
+    const value = Number(m[0]);
+    if (!value) continue;
+    out.push({ value, skeleton: key.slice(0, at) + key.slice(at + m[0].length) });
+  }
+  return out;
+}
+
+/**
+ * **鍵が数字だけ違う束が並んでいたら、それは 1 本の数直線。**
+ *
+ * 外は巻数を**書名の真ん中や副題の尻に差し込んでくる** — この形は
+ * `splitCandidateTitle` では拾えない。拾えるように緩めれば `ゾン100` が削れる:
+ *
+ *   異世界黙示録マイノグーラ 04 ～破滅の文明で始める世界征服～   巻が真ん中
+ *   本好きの下剋上　第二部　神殿の巫女見習い3             副題に座っている
+ *
+ * 1 冊で見ても分からないが、**並べると分かる** — 鍵が
+ * `…巫女見習い1` … `…巫女見習い8` と数字だけ違って並んでいれば、それは巻だ。
+ *
+ * 誤合流を防ぐために**自前の数直線を持っている束は動かさない**。
+ * `血界戦線back2back` は 1・3・5・10巻を抱えているのだから、鍵の `2` は巻ではなく
+ * 書名の一部でしかありえない — ここを見ないと無印の束へ流れ込んでしまう。
+ */
+function foldNumberedSeries(buckets: Map<string, Candidate[]>): Set<string> {
+  const runsOf = new Map<string, NumberRun[]>();
+  for (const [key, list] of buckets) {
+    // この束が全部「その巻」で説明できる数字の並びだけが巻の候補
+    const runs = numberRunsOf(key).filter((r) =>
+      list.every((c) => c.volume === null || c.volume === r.value)
+    );
+    if (runs.length) runsOf.set(key, runs);
+  }
+
+  // 同じ骨格を持つ仲間の数。**2 つ並んで初めて数直線と言える**
+  const family = new Map<string, number>();
+  for (const runs of runsOf.values()) {
+    for (const skeleton of new Set(runs.map((r) => r.skeleton))) {
+      family.set(skeleton, (family.get(skeleton) ?? 0) + 1);
+    }
+  }
+
+  const born = new Set<string>();
+  for (const [key, runs] of runsOf) {
+    // 行き先は**既に 2 件以上ある束**か、同じ骨格の仲間が 2 つ以上いるところ。
+    // 1 件対 1 件では巻と言い切れない — `Babel-17` を `Babel` の第17巻にしてしまう
+    const run =
+      runs.find((r) => r.skeleton !== key && (buckets.get(r.skeleton)?.length ?? 0) >= 2) ??
+      runs.find((r) => (family.get(r.skeleton) ?? 0) >= 2);
+    const list = run && buckets.get(key);
+    if (!run || !list) continue;
+    buckets.delete(key);
+    const dest = buckets.get(run.skeleton) ?? [];
+    if (!buckets.has(run.skeleton)) born.add(run.skeleton);
+    buckets.set(run.skeleton, dest);
+    for (const c of list) {
+      dest.push({
+        ...c,
+        volume: c.volume ?? run.value,
+        baseTitle: stripVolumeDigits(c.baseTitle, run.value),
+      });
+    }
+  }
+  return born;
+}
+
+/** 短い鍵は偶然で形が揃う。`afarewelltoarms` の真ん中を削ると `arms` になる */
+const INNER_CUT_MIN = 6;
+
+/**
+ * `short` が `long` の**真ん中を 1 か所削ったもの**か。
+ *
+ * **両端が残っていることを要求する。** 末尾を削っただけのものを許すと、
+ * `ふしぎ遊戯` と `ふしぎ遊戯玄武開伝` が繋がる — あれは本物の別シリーズで、
+ * このファイルがずっと守ってきた境界線。
+ *
+ * それだけでは足りない。**短い鍵と、削る量の多い組み合わせは偶然で揃う** —
+ * `A Farewell to Arms` は `Arms` の鍵を頭の `a` と尻の `rms` で挿んでしまう
+ * (2026-09-22 に ARMS の候補で実際に起きた)。**鍵に 6 文字、両端に 2 文字ずつ**を要求する。
+ */
+function innerCutOf(short: string, long: string): string | null {
+  if (short.length < INNER_CUT_MIN || short.length >= long.length) return null;
+  let head = 0;
+  while (head < short.length && short[head] === long[head]) head++;
+  if (head < 2) return null;
+  let tail = 0;
+  while (
+    tail < short.length - head &&
+    short[short.length - 1 - tail] === long[long.length - 1 - tail]
+  ) {
+    tail++;
+  }
+  if (tail < 2 || head + tail !== short.length) return null;
+  return long.slice(head, long.length - tail);
+}
+
+/**
+ * **別の本であることを名乗る言葉。これが抜けている差は「提供元の省略」ではない。**
+ *
+ * NDL は版を**書名の真ん中**に挿んでくるので、末尾の【分冊版】と違って
+ * innerCutOf では見分けられない (2026-09-22 にロトの紋章で実際に起きた):
+ *
+ *   ロトの紋章 : 紋章を継ぐ者達へ : ドラゴンクエスト列伝   34巻
+ *   ロトの紋章 : **完全版** : ドラゴンクエスト列伝       15巻
+ *
+ * 畳むと 15巻分の完全版の表紙が原作の巻の椅子を取る —
+ * このファイルが直しに来た壊れ方そのもの。
+ */
+const OTHER_BOOK_WORDS =
+  /完全版|新装版|分冊版|文庫版|愛蔵版|豪華版|特装版|限定版|合本版|新版|旧版|改訂版|増補版|復刻版|カラー版|モノクロ版|電子版|廉価版|総集編|短編集|外伝|番外編|アンソロジー|画集|資料集|newedition|completeedition|deluxe/;
+
+/**
+ * **中に挿さっている副題を、削ってある方へ畳む。**
+ *
+ * 提供元によって正式名をどこまで書くかが違う。本好きの下剋上がその典型で、
+ * 同じ 13 巻のコミックが 2 つの束に割れる:
+ *
+ *   本好きの下剋上第二部本のためなら巫女になる                            4〜10巻
+ *   本好きの下剋上**司書になるためには手段を選んでいられません**第二部本のためなら巫女になる   1・2・3・11〜13巻
+ *
+ * 頭と尻がそのままで真ん中だけが抜けているのは、**提供元が省いた形** の印。
+ * 末尾に足されている副題 (玄武開伝、【分冊版】) とは別物なので、isInnerCut で切る。
+ */
+function foldInsertedSubtitle(buckets: Map<string, Candidate[]>): void {
+  // 小さい束から見て、大きい束へ寄せる (見出しは冗長な方ではなく多数派の方になる)
+  const order = [...buckets.keys()].sort(
+    (a, b) => (buckets.get(a)?.length ?? 0) - (buckets.get(b)?.length ?? 0)
+  );
+  for (const key of order) {
+    const list = buckets.get(key);
+    if (!list) continue;
+    const parent = [...buckets.keys()].find((p) => {
+      if (p === key || (buckets.get(p)?.length ?? 0) < list.length) return false;
+      const cut = innerCutOf(p, key) ?? innerCutOf(key, p);
+      // 抜けているのが版の名前なら、それは別の本
+      return cut !== null && !OTHER_BOOK_WORDS.test(cut);
+    });
+    if (!parent) continue;
+    buckets.delete(key);
+    buckets.get(parent)!.push(...list);
+  }
+}
+
+/**
  * 候補をシリーズの束にまとめる。
  *
  * 束ねる鍵は `seriesKeyOf(baseTitle)`。副題は**落とさない** —
@@ -321,6 +515,12 @@ function toGroup(key: string, items: Candidate[]): CandidateGroup {
  *   血界戦線back2back (11件)   → 畳まない                 別シリーズ
  *
  * **巻ごとの副題は 1 冊にしか現れない。別シリーズなら何冊も並ぶ。** この差で切る。
+ *
+ * その前に 2 つ畳む。どちらも**1 冊を見ても分からず、並べて初めて分かる**もので、
+ * 鍵の頭が揃わないので上の畳み方では届かない:
+ *
+ *   foldNumberedSeries     鍵が数字だけ違う束   `…マイノグーラ04破滅…` → `…マイノグーラ破滅…`
+ *   foldInsertedSubtitle   真ん中だけ抜けた鍵   `本好き…司書…第二部…` → `本好き…第二部…`
  */
 export function groupCandidates(items: Candidate[]): CandidateGroup[] {
   const buckets = new Map<string, Candidate[]>();
@@ -332,6 +532,9 @@ export function groupCandidates(items: Candidate[]): CandidateGroup[] {
     else buckets.set(key, [c]);
   }
 
+  // 数字だけ違う束を先にまとめる。ここで数直線が見えると、下の畳み先になる
+  const born = foldNumberedSeries(buckets);
+
   // 畳み先は「2 件以上ある束」だけ。長い鍵から見て、一番近い親へ寄せる
   const parents = [...buckets.entries()]
     .filter(([, v]) => v.length >= 2)
@@ -339,12 +542,20 @@ export function groupCandidates(items: Candidate[]): CandidateGroup[] {
     .sort((a, b) => b.length - a.length);
 
   for (const [key, list] of [...buckets.entries()]) {
-    if (list.length !== 1) continue;
-    const parent = parents.find((p) => p !== key && key.startsWith(p));
-    if (!parent) continue;
+    // 上で新しく生まれた束は件数を問わない。並んでいるのは巻ごとの 1 冊で、
+    // この畳みが迴えに来たものそのもの (`銃夢(ガンム)1〜9` → `銃夢`)
+    if (list.length !== 1 && !born.has(key)) continue;
+    // 新しく生まれた束同士で親子になれるので、**既に畳まれた先へ寄せない**
+    const parent = parents.find((p) => p !== key && key.startsWith(p) && buckets.has(p));
+    if (!parent || !buckets.has(key)) continue;
     buckets.get(parent)!.push(...list);
     buckets.delete(key);
   }
+
+  // **一番最後。** ローマ数字の巻 (`ウォルテニア戦記 II` と `XXII`) は互いに
+  // 真ん中を削った形に見える。先にこれを走らせると、本体へ寄るはずの 1 件たちが
+  // 島を作って上の畳みから外れてしまう
+  foldInsertedSubtitle(buckets);
 
   return [...buckets.entries()]
     .map(([key, list]) => toGroup(key, list))
