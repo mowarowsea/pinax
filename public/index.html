@@ -960,7 +960,7 @@ function splitBoxHtml() {
         <div class="spfrom">${esc(s.done.from)}</div>
         ${s.done.made.map((n) => `<div class="spto">${esc(n)}</div>`).join('')}
       </div>
-      <div class="spacts"><button class="btn go" id="sp-scan">棚を読み直す</button>${close}</div>
+      <div class="spacts"><button class="btn go" id="sp-scan">この作品だけ再読込</button>${close}</div>
     </div>`;
   }
 
@@ -1016,8 +1016,9 @@ function renderSplitBox() {
   if (!box) return;
   box.innerHTML = splitBoxHtml();
   $('sp-close')?.addEventListener('click', () => { splitClose(); renderSplitBox(); });
-  // 読み直しは棚のボタンに任せる。同じことをする道を 2 本にしない
-  $('sp-scan')?.addEventListener('click', () => { splitClose(); renderSplitBox(); $('scan').click(); });
+  // 読み直すのは**割った作品だけ。** 全根スキャンは NAS だと数十秒かかるので、
+  // 1 作品を棚へ載せ直すためにそれを待たせない (rescanSeries)
+  $('sp-scan')?.addEventListener('click', (e) => rescanSeries(splitter.seriesId, e.currentTarget));
   $('sp-go')?.addEventListener('click', splitGo);
 }
 
@@ -1079,6 +1080,39 @@ async function splitWatch(id) {
     renderSplitBox();
     return;
   }
+}
+
+/**
+ * その作品のフォルダだけ読み直す。**全根スキャンと同じことを、歩く量だけ減らしてやる。**
+ *
+ * 棚のファイルは pinax の外でも動く (合本を割った直後、手で巻を足した時)。
+ * 定期スキャンは既定で 3 時間おきなので、そこまで待てない時の道がここ。
+ * 押した所に戻って板を貼り直すので、押した人は結果をその場で見られる。
+ */
+async function rescanSeries(id, button) {
+  const was = button ? button.textContent : '';
+  if (button) { button.disabled = true; button.innerHTML = '<span class="spin"></span> 再読込中'; }
+  try {
+    const { results } = await api(`/api/series/${id}/rescan`, { method: 'POST' });
+    const bad = results.find((r) => r.error);
+    if (bad) toast(bad.error, 6000);
+    else {
+      // フォルダが 2 つに散っている作品では 2 本返る。**足して 1 行で言う**
+      const seen = results.reduce((n, r) => n + r.filesSeen, 0);
+      const added = results.reduce((n, r) => n + r.volumesAdded, 0);
+      const gone = results.reduce((n, r) => n + r.gone, 0);
+      const bits = [`${seen} ファイル`, `巻 +${added}`];
+      // **消えた分も言う。** 割った後の原本のように、減る方が本題のことがある
+      if (gone) bits.push(`消えた ${gone}`);
+      toast(bits.join(' / '), 5000);
+    }
+    await Promise.all([loadGrid(), loadNews(), loadStats()]);
+    // 開いたままの板は貼り直さないと古いまま。**読み直しても中身が変わらない**所だった
+    if (sheetOpen() && lastDetail && lastDetail.id === id) await openDetail(id, 'keep');
+  } catch (e) {
+    toast('失敗: ' + e.message, 5000);
+  }
+  if (button) { button.disabled = false; button.textContent = was; }
 }
 
 function detailHtml(d) {
@@ -1181,6 +1215,7 @@ function detailHtml(d) {
       <button class="btn" id="pick-open">表紙を探して選ぶ</button>
       <button class="btn" id="rn-open">名前を直す</button>
       ${caps.reveal.available ? '<button class="btn pc-only" id="reveal">エクスプローラで開く</button>' : ''}
+      <button class="btn" id="rescan">この作品だけ再読込</button>
     </div>
     ${renameBoxHtml(d)}
   </div>
@@ -1525,6 +1560,9 @@ function wireDetail(d) {
   // 表紙を探して選ぶ。**作品まるごとの入口はここ。**
   // 巻 1 つぶんは板の「···」の中 (openVolMenu)
   $('pick-open')?.addEventListener('click', () => openPicker(null));
+
+  // この作品のフォルダだけ読み直す。分割の紙からも同じ所へ来る (renderSplitBox)
+  $('rescan')?.addEventListener('click', (e) => rescanSeries(id, e.currentTarget));
 
   // 板の操作は「···」1 つに畳んである。サムネ変更・巻ごとに分割・要ケアは全部この中
   closeVolMenu();

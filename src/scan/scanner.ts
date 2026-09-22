@@ -80,10 +80,24 @@ export async function listFiles(root: string): Promise<FoundFile[]> {
  * その間ずっと所持の問い合わせが止まる。
  */
 export function scanRoot(db: Db, root: LibraryRoot): Promise<ScanResult> {
-  return withShelfLock(`${root.label} を読んでいます`, () => scanRootLocked(db, root));
+  return withShelfLock(`${root.label} を読んでいます`, () => scanLocked(db, root, null));
 }
 
-async function scanRootLocked(db: Db, root: LibraryRoot): Promise<ScanResult> {
+/**
+ * 作品フォルダを 1 つだけ読み直す。**根は丸ごと歩かない。**
+ *
+ * 合本を割った直後のように「今さわった 1 作品」だけを棚に載せ直したい時のための道。
+ * 全根スキャンは NAS だと数十秒かかるので、1 作品のためにそれを待たせない。
+ *
+ * **まだ一度も読んでいない根では断る。** 初回の全根スキャンはお知らせを出さない
+ * 「棚卸し」として済ませる決まりなので (scanLocked の註)、その前に 1 フォルダだけ
+ * 入れてしまうと棚卸しの印が消え、次の全根スキャンで蔵書ぜんぶが新着として流れる。
+ */
+export function scanFolder(db: Db, root: LibraryRoot, relDir: string): Promise<ScanResult> {
+  return withShelfLock(`${root.label} の ${relDir} を読んでいます`, () => scanLocked(db, root, relDir));
+}
+
+async function scanLocked(db: Db, root: LibraryRoot, relDir: string | null): Promise<ScanResult> {
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
   const scanId = db.startScan(root.id, startedAt);
@@ -99,15 +113,26 @@ async function scanRootLocked(db: Db, root: LibraryRoot): Promise<ScanResult> {
   const baseline = Number(known.n) === 0;
   base.baseline = baseline;
 
+  if (relDir !== null && baseline) {
+    const error = 'まだこの棚を読んでいません。先に棚ごと読み直してください';
+    db.finishScan(scanId, { filesSeen: 0, seriesAdded: 0, volumesAdded: 0, gone: 0, error });
+    return { ...base, baseline: false, error, elapsedMs: Date.now() - t0 };
+  }
+
+  const walkFrom = relDir === null ? root.path : path.join(root.path, relDir);
   let files: FoundFile[];
   try {
-    files = await listFiles(root.path);
+    files = await listFiles(walkFrom);
   } catch (e) {
-    // 根が読めない = NAS が見えていない。**蔵書を倒さずに中止する**
-    const error = `蔵書ルートを読めません (${root.path}): ${(e as Error).message}`;
+    // 読めない = NAS が見えていない。**蔵書を倒さずに中止する**
+    const error = relDir === null
+      ? `蔵書ルートを読めません (${root.path}): ${(e as Error).message}`
+      : `フォルダを読めません (${relDir}): ${(e as Error).message}`;
     db.finishScan(scanId, { filesSeen: 0, seriesAdded: 0, volumesAdded: 0, gone: 0, error });
     return { ...base, error, elapsedMs: Date.now() - t0 };
   }
+  // listFiles は歩き始めた所からの相対を返す。行の同一性は**根からの相対**なので直す
+  if (relDir !== null) for (const f of files) f.rel = path.join(relDir, f.rel);
 
   base.filesSeen = files.length;
   const newVolumesBySeries = new Map<number, { label: string; vols: string[] }>();
@@ -178,7 +203,11 @@ async function scanRootLocked(db: Db, root: LibraryRoot): Promise<ScanResult> {
       });
     }
 
-    base.gone = db.markGone(root.id, startedAt);
+    // **倒すのは歩いた所の下だけ。** フォルダ 1 つを読み直しただけで根ごと倒すと、
+    // 歩かなかった作品が全部「消えた」になる
+    base.gone = relDir === null
+      ? db.markGone(root.id, startedAt)
+      : db.markGoneUnder(root.id, relDir + path.sep, startedAt);
 
     for (const [seriesId, acc] of newVolumesBySeries) {
       db.addEvent('volume_added', acc.label, `${acc.vols.sort().join(' / ')} が増えました`, seriesId);

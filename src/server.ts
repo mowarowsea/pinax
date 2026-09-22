@@ -13,7 +13,7 @@ import { cacheThumbnail, imageHostAllowed } from './bib/covers.js';
 import type { CandidateProvider } from './bib/candidates.js';
 import { searchNdl } from './bib/ndl.js';
 import { cachedFetch } from './bib/cache.js';
-import { scanAll, scanRoot } from './scan/scanner.js';
+import { scanAll, scanFolder, scanRoot, type ScanResult } from './scan/scanner.js';
 import {
   ArchiveError,
   contentTypeOf,
@@ -316,6 +316,29 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   app.post<{ Body: { root?: string } }>('/api/scan', async (req) => {
     const rootId = req.body?.root;
     const results = rootId ? [await scanRoot(db, rootById(rootId))] : await scanAll(db, cfg.roots);
+    opts.onScan?.();
+    return { results };
+  });
+
+  /**
+   * **その作品のフォルダだけ**読み直す。合本を割った直後のように、今さわった 1 作品を
+   * すぐ棚へ載せ直したい時の道 (全根スキャンは NAS だと数十秒かかる)。
+   *
+   * 歩く場所は**持っているファイルから引く** — `series.folder` は親フォルダの名前だけで、
+   * 根からの道ではない。根直置きの作品はフォルダに絞れないので断る。
+   */
+  app.post<{ Params: { id: string } }>('/api/series/:id/rescan', async (req) => {
+    const id = Number(req.params.id);
+    const series = db.getSeries(id);
+    if (!series) throw new HttpError(404, 'そんな作品はありません');
+    const root = rootById(series.rootId);
+
+    const dirs = db.seriesDirs(id);
+    if (!dirs.length) throw new HttpError(409, '棚にファイルが残っていません。棚ごと読み直してください');
+    if (dirs.includes('.')) throw new HttpError(409, 'ルート直置きの作品です。棚ごと読み直してください');
+
+    const results: ScanResult[] = [];
+    for (const dir of dirs) results.push(await scanFolder(db, root, dir));
     opts.onScan?.();
     return { results };
   });

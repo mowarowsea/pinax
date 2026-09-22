@@ -778,6 +778,33 @@ export class Db {
     const r = this.raw
       .prepare('UPDATE files SET present = 0 WHERE root_id = ? AND present = 1 AND last_seen_at < ?')
       .run(rootId, scanStartedAt);
+    this.rollUpPresence();
+    return Number(r.changes ?? 0);
+  }
+
+  /**
+   * フォルダを 1 つだけ読み直した時の「消えた」判定。
+   *
+   * **倒すのは歩いた所の下だけ。** markGone をそのまま使うと、今回歩かなかった作品が
+   * 根まるごと present = 0 に倒れ、棚から本が消えたように見える。
+   *
+   * 前方一致は LIKE ではなく `instr(..., prefix) = 1` で見る。フォルダ名に `_` や `%` が
+   * 入っていると LIKE は別のフォルダまで拾う (`_` は「任意の 1 文字」)。
+   * `substr` + 長さ比較も避ける — SQLite の文字数と JS の `.length` はサロゲートペアでずれる。
+   */
+  markGoneUnder(rootId: string, relDirPrefix: string, scanStartedAt: string): number {
+    const r = this.raw
+      .prepare(
+        `UPDATE files SET present = 0
+          WHERE root_id = ? AND present = 1 AND last_seen_at < ? AND instr(rel_path, ?) = 1`
+      )
+      .run(rootId, scanStartedAt, relDirPrefix);
+    this.rollUpPresence();
+    return Number(r.changes ?? 0);
+  }
+
+  /** ファイルが 1 つも残っていない巻と作品を「消えた」に倒す */
+  private rollUpPresence(): void {
     this.raw.exec(`
       UPDATE volumes SET present = 0
        WHERE present = 1
@@ -786,7 +813,20 @@ export class Db {
       UPDATE series SET present = 0
        WHERE present = 1
          AND NOT EXISTS (SELECT 1 FROM files f WHERE f.series_id = series.id AND f.present = 1)`);
-    return Number(r.changes ?? 0);
+  }
+
+  /**
+   * その作品のファイルが**実際に置かれているフォルダ** (根からの相対)。読み直す範囲を決める。
+   *
+   * `series.folder` は親フォルダの**名前だけ**で、根からの道ではない (parseLibraryEntry)。
+   * 深い所に置かれた作品を名前だけで探しに行くと当たらないので、持っているファイルから引く。
+   * 根直置きのファイルは `'.'` で返る — 呼ぶ側が弾くこと (根まるごとになってしまう)。
+   */
+  seriesDirs(seriesId: number): string[] {
+    const rows = this.raw
+      .prepare('SELECT DISTINCT rel_path FROM files WHERE series_id = ? AND present = 1')
+      .all(seriesId) as { rel_path: string }[];
+    return [...new Set(rows.map((r) => path.dirname(String(r.rel_path))))];
   }
 
   // ---- events ------------------------------------------------------------

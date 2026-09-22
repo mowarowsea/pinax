@@ -757,6 +757,7 @@ POST   /api/own                         所持の問い合わせ (要トーク�
 GET    /api/events?unread=1             お知らせ
 POST   /api/events/read                 既読にする
 POST   /api/scan                        棚の読み直し ({ root } で 1 つだけ)
+POST   /api/series/:id/rescan           その作品のフォルダだけ読み直す (根直置きの作品は 409)
 POST   /api/covers/fill-volumes         作品の中で抜けている「巻」を埋める (楽天の鍵が要る)
 GET    /api/series/:id/cover-search?q=&author=&provider=all|ndl|rakuten
                                         書影の候補を探し、シリーズの束にまとめて返す
