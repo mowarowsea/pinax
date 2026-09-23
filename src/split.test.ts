@@ -66,6 +66,9 @@ test('全体が 1 枚の入れ物に入っていても剥がして割る', () =>
   );
   assert.equal(g.reason, null);
   assert.deepEqual(g.parts.map((p) => p.volume), [9, 10]);
+  // 取り出す時は入れ物ごとの元の名前で引く。落とすと書庫の中で見つからない
+  assert.deepEqual(g.parts[0].members, ['ぼくの輪廻 第09-10巻/第09巻/001.jpg']);
+  assert.deepEqual(g.parts[0].as, ['001.jpg']);
 });
 
 test('章の階層は潰さない。潰すと別の章の 001.jpg がぶつかる', () => {

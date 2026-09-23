@@ -102,7 +102,7 @@ const INNER_RE = /\.(rar|zip)$/i;
  * **フォルダでしか分けない。** `第09巻_001.jpg` のような名前での分け方も書けるが、
  * 手元の実物には無い上に、`ほげ_001.jpg` との区別が付かない。読めないものは読めないと言う。
  */
-function groupByFolder(names: string[]): Map<string, string[]> | null {
+function groupByFolder(names: string[]): Map<string, { member: string; as: string }[]> | null {
   let segs = names.map((n) => n.split('/').filter(Boolean));
   if (segs.some((s) => s.length < 2)) return null;
 
@@ -113,13 +113,14 @@ function groupByFolder(names: string[]): Map<string, string[]> | null {
   }
   if (segs.some((s) => s.length < 2)) return null;
 
-  const out = new Map<string, string[]>();
+  const out = new Map<string, { member: string; as: string }[]>();
   for (let i = 0; i < names.length; i++) {
     const key = segs[i][0];
     const acc = out.get(key) ?? [];
-    // 巻のフォルダから先だけを残す。`第09巻/章1/001.jpg` の章の階層は残す
-    // (落とすと別々の章の `001.jpg` がぶつかる)
-    acc.push(segs[i].slice(1).join('/'));
+    // 取り出す時は**元の名前のまま**引く。剥がした入れ物の名前を落とすと
+    // 書庫の中で見つからない。新しい書庫の中の名前は巻のフォルダから先だけ —
+    // `第09巻/章1/001.jpg` の章の階層は残す (落とすと別々の章の `001.jpg` がぶつかる)
+    acc.push({ member: names[i], as: segs[i].slice(1).join('/') });
     out.set(key, acc);
   }
   return out;
@@ -195,7 +196,7 @@ export function groupIndex(index: PageIndex, from: number, to: number): Grouped 
     if (v === null) {
       return { kind: 'folders', parts: [], reason: `フォルダ名から巻番号が読めません: ${label}` };
     }
-    parts.push({ volume: v, members: rest.map((r) => `${label}/${r}`), as: rest });
+    parts.push({ volume: v, members: rest.map((r) => r.member), as: rest.map((r) => r.as) });
   }
   const nums = parts.map((p) => p.volume);
   if (!covers(nums, from, to)) {
