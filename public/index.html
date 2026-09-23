@@ -130,6 +130,9 @@ main { padding: 16px 20px 60px; }
 .badges { position: absolute; top: 5px; left: 5px; right: 5px; display: flex; gap: 4px; flex-wrap: wrap; }
 .badge { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; color: #fff; background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
 .badge.gap { background: var(--gap); }
+.fav-mark { position: absolute; top: 3px; right: 6px; font-size: 18px; line-height: 1; color: #f2b01e; text-shadow: 0 0 3px rgba(0,0,0,.6); }
+.cover:has(.fav-mark) .badges { right: 26px; }
+.favsec { margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 .badge.done { background: var(--ok); }
 .c-title { font-size: 12.5px; font-weight: 600; line-height: 1.35; }
 .c-meta { font-size: 11px; color: var(--ink-3); }
@@ -174,6 +177,10 @@ main { padding: 16px 20px 60px; }
 .d-cover img { width: 100%; height: 100%; object-fit: cover; }
 .d-info { flex: 1 1 0; min-width: 0; }
 .d-info h2 { margin: 0 0 4px; font-size: 20px; line-height: 1.35; }
+.d-titlerow { display: flex; align-items: flex-start; gap: 8px; }
+.d-titlerow h2 { flex: 1 1 0; min-width: 0; }
+.fav { flex: none; background: none; border: 0; padding: 0 2px; font-size: 26px; line-height: 1; color: var(--ink-3); cursor: pointer; }
+.fav.on { color: #f2b01e; }
 .d-author { color: var(--brand); font-size: 13px; font-weight: 600; margin-bottom: 10px; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12.5px; color: var(--ink-2); }
 .kv dt { color: var(--ink-3); }
@@ -572,6 +579,10 @@ button.cover { border: 0; padding: 0; font: inherit; }
 <div id="news"></div>
 
 <main>
+  <div class="favsec" id="favsec" hidden>
+    <div class="count-line" id="favline"></div>
+    <div class="grid" id="favgrid"></div>
+  </div>
   <div class="count-line" id="countline"></div>
   <div class="grid" id="grid"></div>
   <div class="empty" id="empty" hidden>見つかりませんでした</div>
@@ -677,6 +688,23 @@ function saveSort(v) {
   try { localStorage.setItem(SORT_KEY, v); } catch { /* 見られない端末でも棚は読めること自体は困らない */ }
 }
 
+/**
+ * お気に入りも localStorage。**端末ごとに別** — 並び順と同じ立場。
+ * 作品の id で持つ。id は再読込で変わらない (series は消さずに present を落とすだけ)
+ */
+const FAV_KEY = 'pinax.favorites';
+const favs = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(FAV_KEY) ?? '[]');
+    return new Set(Array.isArray(v) ? v.filter(Number.isInteger) : []);
+  } catch { return new Set(); }
+})();
+function toggleFav(id) {
+  if (favs.has(id)) favs.delete(id); else favs.add(id);
+  try { localStorage.setItem(FAV_KEY, JSON.stringify([...favs])); } catch { /* 覚えられないだけで、今の画面では効く */ }
+  return favs.has(id);
+}
+
 const state = {
   q: '', gaps: false, behind: false, completed: undefined, needsCover: false, issues: false,
   care: false, sort: savedSort(),
@@ -711,6 +739,7 @@ function cardHtml(s) {
   const range = h ? `1〜${h.max}${h.unit}` : (s.looseFiles ? `${s.looseFiles}点` : '');
   return `<button class="card" data-id="${s.id}">
     <span class="cover">${coverHtml(s.coverUrl, s.title)}
+      ${favs.has(s.id) ? '<span class="fav-mark" aria-label="お気に入り">★</span>' : ''}
       ${badges.length ? `<span class="badges">${badges.join('')}</span>` : ''}</span>
     <span class="c-title">${esc(s.title)}</span>
     <span class="c-meta">${esc(s.author ?? '著者不明')}${range ? ' · ' + range : ''}</span>
@@ -728,9 +757,16 @@ async function loadGrid() {
   if (state.care) p.set('care', '1');
 
   const { total, items } = await api('/api/series?' + p);
-  $('grid').innerHTML = items.map(cardHtml).join('');
+  // お気に入りは先頭の段へ抜き出す。**下の棚には重ねて出さない**。
+  // 絞り込みはそのまま効く — 絞った結果に入っていないお気に入りは段ごと出ない
+  const fav = items.filter((s) => favs.has(s.id));
+  const rest = items.filter((s) => !favs.has(s.id));
+  $('favsec').hidden = fav.length === 0;
+  $('favline').textContent = `お気に入り ${fav.length} 件`;
+  $('favgrid').innerHTML = fav.map(cardHtml).join('');
+  $('grid').innerHTML = rest.map(cardHtml).join('');
   $('empty').hidden = items.length > 0;
-  const shown = items.length;
+  const shown = rest.length;
   $('countline').textContent = state.behind
     ? `続きが出ている作品 ${shown} 件`
     : state.gaps
@@ -1201,7 +1237,11 @@ function detailHtml(d) {
   <div class="d-head">
     <div class="d-cover">${coverHtml(d.coverUrl, d.title)}</div>
     <div class="d-info">
-      <h2>${esc(d.title)}${d.completed ? ' <span class="badge done">完結</span>' : ''}</h2>
+      <div class="d-titlerow">
+        <h2>${esc(d.title)}${d.completed ? ' <span class="badge done">完結</span>' : ''}</h2>
+        <button class="fav${favs.has(d.id) ? ' on' : ''}" id="fav" aria-pressed="${favs.has(d.id)}"
+          aria-label="お気に入り">${favs.has(d.id) ? '★' : '☆'}</button>
+      </div>
       <div class="d-author">${esc(d.author ?? '著者不明')}</div>
     </div>
   </div>
@@ -1552,6 +1592,16 @@ async function openDetail(id, mode = 'push') {
 /** 詳細の中のボタンを繋ぐ。中身を貼り直すたびに呼ぶ */
 function wireDetail(d) {
   const id = d.id;
+
+  // お気に入り。端末の中だけで済むので、押したらすぐ棚も組み直す
+  $('fav')?.addEventListener('click', (e) => {
+    const b = e.currentTarget;
+    const on = toggleFav(id);
+    b.classList.toggle('on', on);
+    b.textContent = on ? '★' : '☆';
+    b.setAttribute('aria-pressed', String(on));
+    loadGrid();
+  });
 
   // 完結の入り / 切り
   $('sw-completed')?.addEventListener('change', async (e) => {
@@ -2728,10 +2778,12 @@ async function loadStats() {
 
 // ---- つなぎ込み ---------------------------------------------------------
 
-$('grid').addEventListener('click', (e) => {
-  const card = e.target.closest('.card');
-  if (card) openDetail(Number(card.dataset.id));
-});
+for (const g of ['grid', 'favgrid']) {
+  $(g).addEventListener('click', (e) => {
+    const card = e.target.closest('.card');
+    if (card) openDetail(Number(card.dataset.id));
+  });
+}
 // 背景を叩いて閉じる。**押し始めが背景だった時だけ** —
 // click は押した所と離した所の共通の親で起きるので、板の上の文字を選んだ指を
 // 背景で離すと target が .sheet になり、選んだだけで板が消える
