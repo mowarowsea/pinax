@@ -473,7 +473,21 @@ button.cover { border: 0; padding: 0; font: inherit; }
 /* 読む画面は常に暗いので、--care ではなく明るい方の紫を直に置く */
 .rd-b[data-on="1"] { border-color: #ad8ee0; background: #6d4aa8; color: #fff; }
 .rd-no { font-size: 12px; color: #b5aba5; font-variant-numeric: tabular-nums; }
-.rd-bar input[type=range] { width: 100%; margin: 0 0 8px; accent-color: var(--brand); }
+.rd-bar input[type=range] { width: 100%; margin: 0 0 8px; accent-color: var(--brand); direction: rtl; }
+/* 作者・タイトル・巻の情報行 */
+.rd-info {
+  font-size: 11px; color: #867c77; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-bottom: 6px; text-align: center;
+}
+/* 右上の閉じるボタン。うっすら出しておく */
+.rd-x {
+  position: absolute; top: calc(10px + env(safe-area-inset-top)); right: 12px; z-index: 3;
+  background: transparent; border: none; cursor: pointer;
+  font-size: 22px; line-height: 1; color: #ece6e1; opacity: 0.3;
+  padding: 6px; border-radius: 6px;
+  transition: opacity .18s;
+}
+.rd-x:hover { opacity: 0.85; }
 
 /* ---- スマホ ----
    詳細は下から生える板。上を 12dvh ほど空けて地の画面を残す (何かの上に乗っていると分かる)。
@@ -576,14 +590,15 @@ button.cover { border: 0; padding: 0; font: inherit; }
 
 <!-- 読む。板の上にさらに重ねるので、閉じても下の詳細はそのまま残る -->
 <div class="rd" id="rd" hidden>
+  <button class="rd-x" id="rd-close" aria-label="閉じる">×</button>
   <div class="rd-stage" id="rd-stage"></div>
   <div class="rd-hit" id="rd-hit">
     <div data-hit="prev" style="width:30%"></div><div data-hit="ui" style="width:40%"></div><div data-hit="next" style="width:30%"></div>
   </div>
   <div class="rd-bar" id="rd-bar">
+    <div class="rd-info" id="rd-info"></div>
     <input type="range" id="rd-slider" min="1" max="1" value="1" aria-label="ページ">
     <div class="rd-row">
-      <button class="rd-b" id="rd-close">閉じる</button>
       <button class="rd-b" id="rd-mode">縦読み</button>
       <!-- スキャンのひどさに気付くのは読んでいる最中。閉じて板まで戻らずに印を付けられる -->
       <button class="rd-b" id="rd-care">要ケア</button>
@@ -2127,6 +2142,10 @@ const reader = {
   vertTick: 0,
   /** 今開いている本に「ケアが必要」の印が立っているか (帯のボタンの見た目) */
   care: false,
+  /** 帯に出す作品情報 */
+  title: '',
+  author: '',
+  volLabel: '',
 };
 
 const readerOpen = () => !$('rd').hidden;
@@ -2295,12 +2314,39 @@ async function rdDrawRtl(dir) {
   rdPrefetch();
 }
 
+/**
+ * 次に開く本。**巻の並び (巻数順) で 1 つ後ろの巻の先頭ファイル** — 表紙を押した時と同じく、
+ * 分割書庫は先頭だけを開く (readCover)。
+ * 次の巻が無い時は null。別巻やどこにも属さないファイルも、続きが決まらないので null。
+ * 作品の中身をまだ知らない時 (`#/read/…` を直に開いた) は undefined — 分からないので何もしない
+ */
+function rdNextFileId() {
+  if (!lastDetail) return undefined;
+  const vols = lastDetail.volumes.filter((v) => v.files.length > 0);
+  const idx = vols.findIndex((v) => v.files.some((f) => f.id === reader.fileId));
+  if (idx < 0 || idx >= vols.length - 1) return null;
+  return vols[idx + 1].files[0].id;
+}
+
+/** 最後のページから更に進もうとした。次の巻を開くか聞く */
+function rdGoNextVolume() {
+  const nextId = rdNextFileId();
+  if (nextId === undefined) return;
+  if (nextId === null) { alert('次巻がありません'); return; }
+  const next = lastDetail.volumes.find((v) => v.files.some((f) => f.id === nextId));
+  if (confirm(next?.label ? `次の巻（${next.label}）を開きますか?` : '次の巻を開きますか?')) {
+    // 巻を送るたびに履歴を積むと、閉じるのに戻るを何度も押すことになる
+    openReader(nextId, 'replace');
+  }
+}
+
 function rdGo(d) {
   const n = reader.pages.length;
   if (!n) return;
   if (d > 0) {
     if (reader.half === 1) reader.half = 0;
-    else { if (reader.page >= n - 1) return; reader.page++; reader.half = null; }
+    else if (reader.page >= n - 1) { rdGoNextVolume(); return; }
+    else { reader.page++; reader.half = null; }
   } else {
     if (reader.half === 0) reader.half = 1;
     else { if (reader.page <= 0) return; reader.page--; reader.half = null; }
@@ -2374,6 +2420,9 @@ function rdMeta() {
   sl.max = String(Math.max(1, n));
   sl.value = String(reader.page + 1);
   $('rd-mode').textContent = reader.mode === 'rtl' ? '縦読み' : '右から左';
+  // 帯の情報行：作者 / タイトル / 巻
+  const parts = [reader.author, reader.title, reader.volLabel].filter(Boolean);
+  $('rd-info').textContent = parts.join('  ·  ');
 }
 
 /**
@@ -2407,10 +2456,21 @@ async function openReader(fileId, mode = 'push') {
   reader.trims.clear();
   ++reader.seq;
 
+  // 帯に出す作者・作品・巻。作品の中身を知らない時 (`#/read/…` を直に開いた) は出さない
+  const holder = lastDetail
+    && [...lastDetail.volumes, ...lastDetail.side].find((v) => v.files.some((f) => f.id === fileId));
+  reader.title = holder ? lastDetail.title : '';
+  reader.author = holder ? (lastDetail.author ?? '') : '';
+  reader.volLabel = holder ? (holder.label || '本編') : '';
+
   $('rd').hidden = false;
   document.body.style.overflow = 'hidden';
   if (mode === 'push') history.pushState({ reader: fileId }, '', `#/read/${fileId}`);
   else if (mode === 'entry') history.replaceState({ reader: fileId, entry: true }, '', `#/read/${fileId}`);
+  // 次の巻へ送った。今の履歴を差し替える (直に開いた印は引き継ぐ — 戻る先が変わらない)
+  else if (mode === 'replace') {
+    history.replaceState({ reader: fileId, entry: !!history.state?.entry }, '', `#/read/${fileId}`);
+  }
 
   const stage = $('rd-stage');
   stage.className = 'rd-stage';
@@ -2545,6 +2605,39 @@ function rdSetMode(m) {
   });
   // load は上がってこないので捕まえる側で受ける
   stage.addEventListener('load', (e) => { if (reader.mode === 'vert') rdVertLoaded(e); }, true);
+
+  /**
+   * キーボードの左右キーでページ送り。
+   * 右開き漫画に合わせて、左キーで次へ進み、右キーで前へ戻る。
+   * 縦読みの時も同じキーで前後のページへ飛べるようにしておく
+   */
+  const rdStep = (d) => {
+    if (reader.mode === 'vert') {
+      const n = reader.pages.length;
+      if (!n) return;
+      if (d > 0 && reader.page >= n - 1) { rdGoNextVolume(); return; }
+      const next = Math.max(0, Math.min(n - 1, reader.page + d));
+      if (next === reader.page) return;
+      reader.page = next;
+      const at = $('rd-stage').children[reader.page];
+      if (at) $('rd-stage').scrollTop = at.offsetTop;
+      rdMeta();
+    } else {
+      rdGo(d);
+    }
+  };
+
+  document.addEventListener('keydown', (e) => {
+    if (!readerOpen()) return;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) && e.target.id !== 'rd-slider') return;
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      rdStep(1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      rdStep(-1);
+    }
+  });
 })();
 
 // ---- シートの開け閉め ---------------------------------------------------
