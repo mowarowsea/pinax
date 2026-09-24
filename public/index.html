@@ -2209,6 +2209,32 @@ function rdSaveMode(m) {
   try { localStorage.setItem(RD_MODE_KEY, m); } catch { /* 見られない端末でも読めること自体は困らない */ }
 }
 
+/**
+ * 読みかけのページも localStorage。**端末ごとに別** — 読み方と同じ立場。
+ * ファイルの id → ページ番号。`[[id, page], …]` の並びで持ち、**後ろほど最近**。
+ * 数字キーのオブジェクトは入れた順を覚えないので、古いものから捨てるために並びにする
+ */
+const RD_POS_KEY = 'pinax.readPos';
+const RD_POS_MAX = 300;
+function rdLoadPos() {
+  try {
+    const v = JSON.parse(localStorage.getItem(RD_POS_KEY) ?? '[]');
+    return Array.isArray(v) ? v.filter((e) => Array.isArray(e) && Number.isInteger(e[0]) && Number.isInteger(e[1])) : [];
+  } catch { return []; }
+}
+function rdSavedPage(fileId) {
+  return rdLoadPos().find((e) => e[0] === fileId)?.[1] ?? 0;
+}
+function rdSavePos() {
+  // ページを知る前 (書庫を開いている最中) は 0 ページ目と区別がつかないので書かない
+  if (reader.fileId === null || !reader.pages.length) return;
+  const list = rdLoadPos().filter((e) => e[0] !== reader.fileId);
+  list.push([reader.fileId, reader.page]);
+  try {
+    localStorage.setItem(RD_POS_KEY, JSON.stringify(list.slice(-RD_POS_MAX)));
+  } catch { /* 覚えられないだけで、今は読める */ }
+}
+
 function rdImg(i) {
   let img = reader.imgs.get(i);
   if (!img) {
@@ -2473,6 +2499,8 @@ function rdMeta() {
   // 帯の情報行：作者 / タイトル / 巻
   const parts = [reader.author, reader.title, reader.volLabel].filter(Boolean);
   $('rd-info').textContent = parts.join('  ·  ');
+  // ページが動くと必ずここを通る (めくる・目盛り・縦のスクロール・キー)
+  rdSavePos();
 }
 
 /**
@@ -2543,6 +2571,8 @@ async function openReader(fileId, mode = 'push') {
     const r = await api(`/api/files/${fileId}/pages`);
     if (reader.fileId !== fileId || !readerOpen()) return;
     reader.pages = r.pages;
+    // 読みかけから再開する。ページ数が変わっていても (中身を差し替えた) はみ出さない
+    reader.page = Math.max(0, Math.min(r.pages.length - 1, rdSavedPage(fileId)));
     if (!r.pages.length) {
       // **黙って空を出さない。** 開かない理由が分からないのが一番困る
       stage.innerHTML = `<div class="rd-msg"><b>ページがありませんでした</b>${
