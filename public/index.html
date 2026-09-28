@@ -455,8 +455,29 @@ button.cover { border: 0; padding: 0; font: inherit; }
 .rd-stage.vert { display: block; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
 .rd-stage.vert .rd-page { width: 100%; }
 .rd-stage img { display: block; }
-/* **直下の絵だけ。** 割った半分の中の絵は 2 倍幅で置くので、ここで詰めてはいけない */
-.rd-stage.rtl > img { max-width: 100%; max-height: 100vh; object-fit: contain; margin: auto; }
+/**
+ * 右から左は**横一列の巻物**。1 画面 = 1 マス (.rd-cell) で、ブラウザのスクロールに
+ * 1 マスずつ止めさせる (ebookjapan と同じ作り)。**払う動きはブラウザに任せる** —
+ * 指を自前で追うと、ブラウザがスクロールとして引き取った時点で pointercancel が来て
+ * 何も起きない (スマホで踏んだ)。direction: rtl で先頭が右端、次のページは左隣。
+ * touch-action: manipulation で二度押し拡大の待ち時間を消す (めくりが 300ms 遅れる)
+ */
+.rd-stage.rtl {
+  display: flex; justify-content: flex-start; align-items: stretch; direction: rtl;
+  overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory; touch-action: manipulation; scrollbar-width: none;
+}
+.rd-stage.rtl::-webkit-scrollbar { display: none; }
+/* 見開きは 1 ページが 2 マスになる。マスを直に並べたいので、ページの箱は消しておく */
+.rd-stage.rtl .rd-page { display: contents; }
+/* 勢いよく払っても 1 マスで止まる。読み飛ばしたページに気付けない方が困る */
+.rd-cell {
+  flex: 0 0 100%; height: 100%; overflow: hidden; direction: ltr;
+  display: flex; align-items: center; justify-content: center;
+  scroll-snap-align: start; scroll-snap-stop: always;
+}
+/* **マス直下の絵だけ。** 割った半分の中の絵は 2 倍幅で置くので、ここで詰めてはいけない */
+.rd-cell > img { max-width: 100%; max-height: 100%; object-fit: contain; }
 
 /**
  * 絵の一部だけを出す窓。**絵は触らない。**
@@ -475,9 +496,6 @@ button.cover { border: 0; padding: 0; font: inherit; }
 .rd-half img { display: block; max-width: none; max-height: none; }
 .rd-stage.vert .rd-half { width: 100%; }
 
-/* touch-action: manipulation で二度押し拡大の待ち時間を消す (めくりが 300ms 遅れる) */
-.rd-hit { position: absolute; inset: 0; display: flex; touch-action: manipulation; }
-.rd-hit > div { height: 100%; }
 /* 絵を掴ませない。**掴むと pointercancel が飛んでスワイプが死ぬ** (PC で踏んだ) */
 .rd img { user-select: none; -webkit-user-drag: none; }
 .rd-msg { color: var(--ink-3); font-size: 13px; text-align: center; line-height: 1.9; padding: 0 28px; }
@@ -623,9 +641,6 @@ button.cover { border: 0; padding: 0; font: inherit; }
 <div class="rd" id="rd" hidden>
   <button class="rd-x" id="rd-close" aria-label="閉じる">×</button>
   <div class="rd-stage" id="rd-stage"></div>
-  <div class="rd-hit" id="rd-hit">
-    <div data-hit="prev" style="width:30%"></div><div data-hit="ui" style="width:40%"></div><div data-hit="next" style="width:30%"></div>
-  </div>
   <div class="rd-bar" id="rd-bar">
     <div class="rd-info" id="rd-info"></div>
     <input type="range" id="rd-slider" min="1" max="1" value="1" aria-label="ページ">
@@ -2329,9 +2344,12 @@ const reader = {
   imgs: new Map(),
   /** i → {x0, x1}。帯を削った後の「絵のある横の範囲」。数字 2 つなので捨てずに持つ */
   trims: new Map(),
+  /** i → 見開きか。**一度分かったら覚えておく** — 絵を外してもマスの数を変えないため */
+  wide: new Map(),
   barTimer: null,
   seq: 0,
   vertTick: 0,
+  rtlTick: 0,
   /** 今開いている本に「ケアが必要」の印が立っているか (帯のボタンの見た目) */
   care: false,
   /** 帯に出す作品情報 */
@@ -2503,33 +2521,118 @@ function rdWinRtlHtml(i, x0, x1) {
 
 // ---- 右から左 ----
 
-async function rdDrawRtl(dir) {
-  const seq = ++reader.seq;
+const RD_EMPTY_CELL = '<div class="rd-cell"><div class="rd-msg">読み込み中</div></div>';
+
+const rdCells = () => $('rd-stage').querySelectorAll('.rd-cell');
+
+/** 今見ているマスの番号 (先頭 = 0)。rtl の横スクロールは右端が 0 で、左へ進むほど負になる */
+function rdCellAt() {
+  const s = $('rd-stage');
+  return Math.round(Math.abs(s.scrollLeft) / Math.max(1, s.clientWidth));
+}
+
+function rdScrollToCell(cell) {
+  if (!cell) return;
+  const s = $('rd-stage');
+  const k = [...rdCells()].indexOf(cell);
+  if (k >= 0) s.scrollLeft = -k * s.clientWidth;
+}
+
+/** ページ i の、見開きなら右半分 (half=1) / 左半分 (half=0) のマス。割っていなければ 1 つ目 */
+function rdCellOf(i, half) {
+  const cs = $('rd-stage').querySelectorAll(`.rd-page[data-i="${i}"] > .rd-cell`);
+  return cs.length > 1 && half === 0 ? cs[1] : cs[0];
+}
+
+/**
+ * 全ページのマスを並べて、今のページまで送る。絵はまだ入れない (rdLoadAround が入れる)。
+ * 見開きと分かっているページは最初から 2 マス
+ */
+function rdDrawRtl() {
+  ++reader.seq;
   const stage = $('rd-stage');
   stage.className = 'rd-stage rtl';
-  $('rd-hit').style.display = 'flex';
-  const i = reader.page;
-  const img = rdImg(i);
-  if (!img.complete) stage.innerHTML = '<div class="rd-msg">読み込み中</div>';
-  await rdReady(img);
-  if (seq !== reader.seq || !readerOpen()) return;
+  stage.innerHTML = reader.pages
+    .map((p, i) => `<div class="rd-page" data-i="${i}">${RD_EMPTY_CELL.repeat(reader.wide.get(i) ? 2 : 1)}</div>`)
+    .join('');
+  rdScrollToCell(rdCellOf(reader.page, reader.half ?? 1));
+  rdMeta();
+  rdLoadAround();
+}
 
-  if (rdWide(i)) { if (reader.half === null) reader.half = dir >= 0 ? 1 : 0; }
-  else reader.half = null;
-
+/** 読み込み済みのページ i をマスに描く。**見開きは右半分が先** (右から読む) */
+function rdRenderPage(box, i) {
+  const img = reader.imgs.get(i);
   const t = rdTrim(i);
-  if (reader.half !== null) {
-    // **右半分が先。** 見開きは右から読む
+  const wide = rdWide(i);
+  let cells;
+  if (wide) {
     const mid = Math.round((t.x0 + t.x1) / 2);
-    stage.innerHTML = reader.half ? rdWinRtlHtml(i, mid, t.x1) : rdWinRtlHtml(i, t.x0, mid);
+    cells = [rdWinRtlHtml(i, mid, t.x1), rdWinRtlHtml(i, t.x0, mid)];
   } else if (t.x0 || t.x1 < img.naturalWidth) {
-    stage.innerHTML = rdWinRtlHtml(i, t.x0, t.x1);
+    cells = [rdWinRtlHtml(i, t.x0, t.x1)];
   } else {
     // 削る所が無いなら窓も要らない。CSS に収めさせる方が、画面が回った時に強い
-    stage.innerHTML = `<img src="${rdUrl(i)}" alt="${i + 1} ページ目">`;
+    cells = [`<img src="${rdUrl(i)}" alt="${i + 1} ページ目">`];
   }
-  rdMeta();
+  box.innerHTML = cells.map((c) => `<div class="rd-cell">${c}</div>`).join('');
+  box.dataset.filled = '1';
+  reader.wide.set(i, wide);
+}
+
+async function rdFillPage(i) {
+  const seq = reader.seq;
+  const img = rdImg(i);
+  await rdReady(img);
+  if (seq !== reader.seq || !readerOpen()) return;
+  const box = $('rd-stage').querySelector(`.rd-page[data-i="${i}"]`);
+  if (!box || box.dataset.filled === '1') return;
+  const before = box.children.length;
+  const at = rdCells()[rdCellAt()];
+  rdRenderPage(box, i);
+  /**
+   * **手前のページが見開きと分かってマスが増えると、今のマスが 1 つ奥へずれる。**
+   * 見ていた所へ戻す。ずれない時は触らない — 払っている最中に位置を置き直すと指が止まる
+   */
+  if (box.children.length !== before && at && at.isConnected && i < Number(at.parentElement.dataset.i)) {
+    rdScrollToCell(at);
+  }
+}
+
+/** 今の前後に絵を入れ、**遠くの絵は外す** (マスは残す)。1 冊 200 枚を抱えたままにしない */
+function rdLoadAround() {
+  const n = reader.pages.length;
+  for (let d = -RD_BACK; d <= RD_AHEAD; d++) {
+    const i = reader.page + d;
+    if (i >= 0 && i < n) rdFillPage(i);
+  }
+  for (const box of $('rd-stage').querySelectorAll('.rd-page[data-filled="1"]')) {
+    const i = Number(box.dataset.i);
+    if (i < reader.page - RD_BACK - 2 || i > reader.page + RD_AHEAD + 2) {
+      box.innerHTML = RD_EMPTY_CELL.repeat(box.children.length);
+      box.dataset.filled = '0';
+    }
+  }
   rdPrefetch();
+}
+
+/** スクロールが止まったマスから、今のページを読み取る */
+function rdRtlScroll() {
+  if (reader.rtlTick) return;
+  reader.rtlTick = requestAnimationFrame(() => {
+    reader.rtlTick = 0;
+    if (reader.mode !== 'rtl') return;
+    const cell = rdCells()[rdCellAt()];
+    if (!cell) return;
+    const box = cell.parentElement;
+    const i = Number(box.dataset.i);
+    const half = box.children.length > 1 ? (cell === box.children[0] ? 1 : 0) : null;
+    if (i === reader.page && half === reader.half) return;
+    reader.page = i;
+    reader.half = half;
+    rdMeta();
+    rdLoadAround();
+  });
 }
 
 /**
@@ -2558,18 +2661,14 @@ function rdGoNextVolume() {
   }
 }
 
+/** 右から左で 1 マス送る。今のページは、スクロールを受けた rdRtlScroll が直す */
 function rdGo(d) {
-  const n = reader.pages.length;
-  if (!n) return;
-  if (d > 0) {
-    if (reader.half === 1) reader.half = 0;
-    else if (reader.page >= n - 1) { rdGoNextVolume(); return; }
-    else { reader.page++; reader.half = null; }
-  } else {
-    if (reader.half === 0) reader.half = 1;
-    else { if (reader.page <= 0) return; reader.page--; reader.half = null; }
-  }
-  rdDrawRtl(d);
+  const cs = rdCells();
+  if (!cs.length) return;
+  const k = rdCellAt() + d;
+  if (k >= cs.length) { rdGoNextVolume(); return; }
+  if (k < 0) return;
+  rdScrollToCell(cs[k]);
 }
 
 // ---- 縦読み ----
@@ -2578,7 +2677,6 @@ function rdDrawVert() {
   ++reader.seq;
   const stage = $('rd-stage');
   stage.className = 'rd-stage vert';
-  $('rd-hit').style.display = 'none';
   // 高さが分かる前は仮の比で場所を取っておく。取らないと読み込むたび下が跳ねる
   stage.innerHTML = reader.pages
     .map((p, i) => `<div class="rd-page" data-i="${i}"><img src="${rdUrl(i)}" loading="lazy"
@@ -2661,9 +2759,9 @@ function rdBar(on) {
   if (on) reader.barTimer = setTimeout(() => { $('rd-bar').dataset.off = '1'; }, 2500);
 }
 
-function rdDraw(dir = 1) {
+function rdDraw() {
   if (reader.mode === 'vert') rdDrawVert();
-  else rdDrawRtl(dir);
+  else rdDrawRtl();
 }
 
 async function openReader(fileId, mode = 'push') {
@@ -2674,6 +2772,7 @@ async function openReader(fileId, mode = 'push') {
   reader.mode = rdMode();
   reader.imgs.clear();
   reader.trims.clear();
+  reader.wide.clear();
   ++reader.seq;
 
   // 帯に出す作者・作品・巻。作品の中身を知らない時 (`#/read/…` を直に開いた) は出さない
@@ -2694,7 +2793,6 @@ async function openReader(fileId, mode = 'push') {
 
   const stage = $('rd-stage');
   stage.className = 'rd-stage';
-  $('rd-hit').style.display = 'none';
   stage.innerHTML = '<div class="rd-msg"><b>書庫を開いています</b>初めて開く本は少し待ちます</div>';
   rdMeta();
   rdSetCare(false);
@@ -2723,7 +2821,7 @@ async function openReader(fileId, mode = 'push') {
           : '絵が入っていませんでした'}</div>`;
       return;
     }
-    rdDraw(1);
+    rdDraw();
   } catch (e) {
     if (reader.fileId !== fileId || !readerOpen()) return;
     stage.innerHTML = `<div class="rd-msg"><b>開けませんでした</b>${esc(e.message)}</div>`;
@@ -2735,6 +2833,7 @@ function rdHide() {
   ++reader.seq;
   reader.imgs.clear();
   reader.trims.clear();
+  reader.wide.clear();
   $('rd-stage').innerHTML = '';
   clearTimeout(reader.barTimer);
   // **板が下に残っているかもしれない。** 残っている時は止めたままにする
@@ -2753,7 +2852,7 @@ function rdSetMode(m) {
   reader.mode = m;
   reader.half = null;
   rdSaveMode(m);
-  rdDraw(1);
+  rdDraw();
   rdBar(true);
 }
 
@@ -2769,61 +2868,82 @@ function rdSetMode(m) {
       const at = $('rd-stage').children[reader.page];
       if (at) $('rd-stage').scrollTop = at.offsetTop;
       rdMeta();
-    } else rdDrawRtl(1);
+    } else {
+      rdScrollToCell(rdCellOf(reader.page, 1));
+      rdMeta();
+      rdLoadAround();
+    }
     rdBar(true);
   });
 
-  /**
-   * 右から左のめくり。**右 30% が次へ、左 30% が前へ。** 真ん中は帯の出し入れ。
-   *
-   * スワイプも揃える (**右へ払えば次**)。次のページは左隣にあるので、
-   * 今のページを右へ送り出すと次が出て来る、という向き。
-   * タップと払う向きが食い違うと指が迷うので、どちらも右が「進む」で揃えてある。
-   */
   // 絵を掴む動き (HTML の drag) が始まると pointerup が来ずに pointercancel になる。
-  // 止めておかないと、絵の上から始めたスワイプだけが効かない
+  // 止めておかないと、絵の上から始めた押下だけが効かない
   $('rd').addEventListener('dragstart', (e) => e.preventDefault());
 
+  /**
+   * 押した時の扱い。**なぞった時は何もしない** (払ってめくった・縦に読み進めた)。
+   *
+   * 右から左は**右 30% が次へ、左 30% が前へ。** 真ん中は帯の出し入れ。
+   * 払う向きも揃えてある (**左から右へ払えば次**) — 次のページは左隣にあるので、
+   * 今のページを右へ送り出すと次が出て来る。払うのはブラウザのスクロールそのもの。
+   *
+   * 縦読みは**どこを押しても帯が出る**。読み進めるたびに帯が出ると、指の下が隠れて読めない
+   */
   let dn = null;
-  $('rd-hit').addEventListener('pointerdown', (e) => { dn = { x: e.clientX, y: e.clientY, t: Date.now() }; });
-  $('rd-hit').addEventListener('pointercancel', () => { dn = null; });
-  $('rd-hit').addEventListener('pointerup', (e) => {
-    if (!dn) return;
-    const dx = e.clientX - dn.x;
-    const dy = e.clientY - dn.y;
+  const stage = $('rd-stage');
+  stage.addEventListener('pointerdown', (e) => {
+    dn = { y: e.clientY, x: e.clientX, t: Date.now(), sx: stage.scrollLeft, sy: stage.scrollTop };
+  });
+  stage.addEventListener('pointercancel', () => { dn = null; });
+  stage.addEventListener('pointerup', (e) => {
     const d = dn;
     dn = null;
-    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) { rdGo(dx > 0 ? 1 : -1); return; }
-    if (Math.abs(dx) > 12 || Math.abs(dy) > 12 || Date.now() - d.t > 500) return;
-    const hit = e.target.dataset ? e.target.dataset.hit : null;
-    if (hit === 'next') rdGo(1);
-    else if (hit === 'prev') rdGo(-1);
+    if (!d || !reader.pages.length) return;
+    const moved = Math.abs(e.clientY - d.y) > 12 || Math.abs(e.clientX - d.x) > 12
+      || Math.abs(stage.scrollTop - d.sy) > 4 || Math.abs(stage.scrollLeft - d.sx) > 4;
+    if (moved || Date.now() - d.t > 500) return;
+    if (reader.mode === 'vert') { rdBar(true); return; }
+    const r = stage.getBoundingClientRect();
+    const fx = (e.clientX - r.left) / Math.max(1, r.width);
+    if (fx > 0.7) rdGo(1);
+    else if (fx < 0.3) rdGo(-1);
     else rdBar($('rd-bar').dataset.off === '1');
   });
 
   /**
-   * 縦読みは**どこを押しても帯が出る**。ただし**なぞった時は出さない** —
-   * 読み進めるたびに帯が出ると、指の下が隠れて読めない
+   * 最後のページから更に左から右へ払った。スクロールはもう動かないので、
+   * 指の動きだけ見て次の巻を聞く。touchend はスクロールに引き取られても来る
    */
-  let vdn = null;
-  const stage = $('rd-stage');
-  stage.addEventListener('pointerdown', (e) => {
-    if (reader.mode !== 'vert') return;
-    vdn = { y: e.clientY, x: e.clientX, t: Date.now(), s: stage.scrollTop };
+  let tx = null;
+  stage.addEventListener('touchstart', (e) => {
+    const cs = rdCells();
+    tx = reader.mode === 'rtl' && e.touches.length === 1 && cs.length && rdCellAt() === cs.length - 1
+      ? e.touches[0].clientX : null;
+  }, { passive: true });
+  stage.addEventListener('touchend', (e) => {
+    if (tx === null) return;
+    const dx = e.changedTouches[0].clientX - tx;
+    tx = null;
+    if (dx > 60 && rdCellAt() === rdCells().length - 1) rdGoNextVolume();
   });
-  stage.addEventListener('pointercancel', () => { vdn = null; });
-  stage.addEventListener('pointerup', (e) => {
-    if (!vdn || reader.mode !== 'vert') { vdn = null; return; }
-    const moved = Math.abs(e.clientY - vdn.y) > 12 || Math.abs(e.clientX - vdn.x) > 12
-      || Math.abs(stage.scrollTop - vdn.s) > 4;
-    if (!moved && Date.now() - vdn.t < 500) rdBar(true);
-    vdn = null;
+
+  stage.addEventListener('scroll', () => {
+    if (reader.mode === 'vert') rdVertScroll();
+    else rdRtlScroll();
   });
-  stage.addEventListener('scroll', () => { if (reader.mode === 'vert') rdVertScroll(); });
-  // 窓は px で置いてあるので、画面が回ったら出し直す。
-  // 素の 1 枚は CSS が勝手に追従するので触らない
+  /**
+   * 画面が回った。**窓は px で置いてある**ので描き直し、見ていたマスへ戻す
+   * (マスの幅が変わると、同じ scrollLeft が別のマスを指す)
+   */
   window.addEventListener('resize', () => {
-    if (readerOpen() && reader.mode === 'rtl' && $('rd-stage').querySelector('.rd-half')) rdDrawRtl(1);
+    if (!readerOpen() || reader.mode !== 'rtl' || !rdCells().length) return;
+    for (const box of stage.querySelectorAll('.rd-page[data-filled="1"]')) {
+      const i = Number(box.dataset.i);
+      const img = reader.imgs.get(i);
+      if (img && img.complete && img.naturalWidth) rdRenderPage(box, i);
+      else { box.innerHTML = RD_EMPTY_CELL.repeat(box.children.length); box.dataset.filled = '0'; }
+    }
+    rdScrollToCell(rdCellOf(reader.page, reader.half ?? 1));
   });
   // load は上がってこないので捕まえる側で受ける
   stage.addEventListener('load', (e) => { if (reader.mode === 'vert') rdVertLoaded(e); }, true);
