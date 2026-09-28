@@ -26,6 +26,7 @@ import { openInExplorer, resolveInsideRoot, revealAbility } from './reveal.js';
 import { applyRename, planRename, RenameError } from './rename.js';
 import { planSplit, SplitError } from './split.js';
 import { SplitJobs } from './split-job.js';
+import { keepOne, KeepError } from './keep.js';
 import { planFolderName, planVolumeName } from './naming.js';
 import { shelfBusy } from './lock.js';
 
@@ -955,6 +956,35 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     const job = splits.get(Number(req.params.id));
     if (!job) throw new HttpError(404, 'その分割は走っていません');
     return job;
+  });
+
+  // ---- 同じ巻の重複を片付ける ---------------------------------------------
+
+  /**
+   * 同じ巻に 2 本以上ある時、選んだ 1 本を残して他を `data/attic/` へ引く (keep.ts)。
+   * 画面は両方の中身を並べて見せてから押させる。
+   *
+   * 引いた後はその作品のフォルダだけ読み直す。**押した人がすぐ結果を見られるように**
+   * (全根スキャンは NAS だと数十秒かかる)。
+   */
+  app.post<{ Params: { id: string }; Body: { keep?: number } }>('/api/series/:id/keep', async (req) => {
+    const id = Number(req.params.id);
+    const series = db.getSeries(id);
+    if (!series) throw new HttpError(404, 'そんな作品はありません');
+    if (splits.busy) throw new HttpError(409, '分割が走っています。終わってからにしてください');
+
+    let result;
+    try {
+      result = await keepOne(db, cfg, id, Number(req.body?.keep ?? 0));
+    } catch (e) {
+      if (e instanceof KeepError || e instanceof SplitError) throw new HttpError(409, e.message);
+      throw e;
+    }
+    const root = rootById(series.rootId);
+    const scans: ScanResult[] = [];
+    for (const dir of result.dirs) if (dir !== '.') scans.push(await scanFolder(db, root, dir));
+    opts.onScan?.();
+    return { ...result, scans };
   });
 
   // ---- 画面 ---------------------------------------------------------------

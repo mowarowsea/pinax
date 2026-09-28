@@ -352,6 +352,26 @@ h3.sec { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 24px 0 
 .spacts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .spacts .go { border-color: var(--brand); color: var(--brand); font-weight: 700; }
 .spwork { color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
+/* 棚に同じ巻が既にあって ` (2)` を付けて置く巻。断らずに割るが、割った後に見比べる用事が残ることを先に言う */
+.spclash { display: block; font-family: inherit; font-weight: 400; color: var(--gap); font-size: 11.5px; }
+
+/* ---- 同じ巻のファイルを見比べる ----
+   分割の紙と同じく**棚の実物を動かす**ので、同じ顔 (左の帯) にする */
+.cmps { display: grid; gap: 12px; }
+.cmp { padding: 12px; border: 1px solid var(--line); border-left: 3px solid var(--gap);
+  border-radius: var(--radius); background: var(--panel); display: grid; gap: 10px; font-size: 12.5px; }
+.cmphead { color: var(--gap); font-weight: 600; }
+.cmpnote { color: var(--gap); font-size: 11.5px; }
+.cmpcols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.cmpcol { border: 1px solid var(--line); border-radius: 8px; padding: 9px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.cmpmeta { color: var(--ink-3); font-size: 11.5px; }
+.cmpmeta b { color: var(--ink); font-weight: 600; }
+/* 絵は横に流す。縦に積むと 2 本を並べた時に見比べる距離が遠くなる */
+.cmpthumbs { display: flex; gap: 6px; overflow-x: auto; min-height: 120px; align-items: flex-start; }
+.cmpthumb { flex: 0 0 auto; display: grid; gap: 2px; justify-items: center; color: var(--ink-3); font-size: 10.5px; }
+.cmpthumb img { height: 120px; width: auto; max-width: 110px; object-fit: contain; border-radius: 4px;
+  background: var(--brand-soft); box-shadow: var(--shadow); }
+.cmpcol .spacts .go { border-color: var(--brand); color: var(--brand); font-weight: 700; }
 
 /* ---- 棚に無い作品の名前を作る ---- */
 .nm-hint { font-size: 11.5px; color: var(--ink-3); margin-top: 9px; }
@@ -1005,8 +1025,9 @@ function splitBoxHtml() {
   const close = '<button class="mini" id="sp-close">閉じる</button>';
 
   if (s.done) {
+    const clashes = s.plan ? s.plan.parts.filter((x) => x.clash).length : 0;
     return `<div class="spbox">
-      <div class="sphead">分割しました</div>
+      <div class="sphead">分割しました${clashes ? ` <span class="spmeta">— ${clashes} 巻が既にある巻と被っています。下の「同じ巻に複数のファイル」で見比べてください</span>` : ''}</div>
       <div class="spplan">
         <div class="spfrom">${esc(s.done.from)}</div>
         ${s.done.made.map((n) => `<div class="spto">${esc(n)}</div>`).join('')}
@@ -1056,7 +1077,9 @@ function splitBoxHtml() {
     <div class="spplan">
       <div class="spfrom">${esc(s.plan.from)}</div>
       ${s.plan.parts.map((x) => `<div class="spto">${esc(x.name)}
-        ${x.pages ? `<span class="spmeta">${x.pages} ページ</span>` : ''}</div>`).join('')}
+        ${x.pages ? `<span class="spmeta">${x.pages} ページ</span>` : ''}
+        ${x.clash ? `<span class="spclash">同じ巻が既にあります (${esc(x.clash)})。
+          (2) を付けて置くので、割った後に中を見比べて残す方を選べます</span>` : ''}</div>`).join('')}
     </div>
     <div class="spacts"><button class="btn go" id="sp-go">分割する</button>${close}</div>
   </div>`;
@@ -1129,6 +1152,12 @@ async function splitWatch(id) {
       toast(`${st.result.made.length} 本に分割しました`, 5000);
     }
     renderSplitBox();
+    // 被った巻があれば**そのまま読み直して見比べる所まで連れて行く。**
+    // 読み直さないと (2) の方が棚に載らず、見比べる相手が居ない
+    if (splitter.done && splitter.plan?.parts.some((x) => x.clash)) {
+      await rescanSeries(splitter.seriesId, $('sp-scan'));
+      $('dupsec')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
     return;
   }
 }
@@ -1543,16 +1572,123 @@ async function saveCareNote(id, note) {
   }
 }
 
-/** 同じ巻に複数のファイルがある巻を並べる。多い作品があるので頭から 12 巻だけ出す */
+/**
+ * 同じ巻に複数のファイルがある巻を、**中身を並べて**見せる。多い作品があるので頭から 12 巻だけ。
+ *
+ * 以前はファイル名の一覧だけで、どちらを残すかはエクスプローラで両方を解凍して
+ * 見比べるしかなかった。合本を割った時に単巻と被るのが一番よく起きる形 (split.ts の clash)。
+ * 絵は開いた後に 1 本ずつ取りに行く (loadCompares) — 索引は rar だと 1 冊 1 秒前後かかる
+ */
 function dupSectionHtml(d) {
   const dups = d.volumes.filter((v) => v.duplicate);
   if (!dups.length) return '';
   const shown = dups.slice(0, 12);
-  return `<h3 class="sec">同じ巻に複数のファイル</h3>
-  <div class="filelist">
-    ${shown.map((v) => `<div class="grp"><b>${esc(v.label)}</b>${v.files.map(fileRowHtml).join('')}</div>`).join('')}
+  return `<h3 class="sec" id="dupsec">同じ巻に複数のファイル <span style="font-weight:400">— 中を見比べて残す方を選べます</span></h3>
+  <div class="cmps">
+    ${shown.map(dupCompareHtml).join('')}
     ${dups.length > shown.length ? `<div class="more">ほか ${dups.length - shown.length} 巻</div>` : ''}
   </div>`;
+}
+
+/** 同じ巻のファイルを「1 本分」ずつに束ねる。分割書庫の続きは 1 本と数える (catalog.ts の fileBaseOf) */
+function fileGroups(files) {
+  const by = new Map();
+  for (const f of files) {
+    const key = f.relPath.replace(/(\.part\d+)?\.[^.\\/]+$/i, '');
+    const acc = by.get(key) ?? [];
+    acc.push(f);
+    by.set(key, acc);
+  }
+  return [...by.values()].map((g) => g.slice().sort((a, b) => (a.partNo ?? 0) - (b.partNo ?? 0)));
+}
+
+function dupCompareHtml(v) {
+  return `<div class="cmp">
+    <b class="cmphead">${esc(v.label)}</b>
+    <div class="cmpcols">${fileGroups(v.files).map(cmpColHtml).join('')}</div>
+    <div class="cmpnote" hidden></div>
+  </div>`;
+}
+
+/** 1 本分の列。**残すのはこの 1 本 (分割書庫なら続きも) で、同じ巻の他は全部 attic へ引く** */
+function cmpColHtml(files) {
+  const f = files[0];
+  const size = files.reduce((n, x) => n + x.size, 0);
+  return `<div class="cmpcol" data-cmp-file="${f.id}">
+    <div class="filelist">${files.map(fileRowHtml).join('')}</div>
+    <div class="cmpmeta"><b>${mb(size)}</b> · <span class="cmppages">ページ数を数えています</span></div>
+    <div class="cmpthumbs"><span class="spwork"><span class="spin"></span>中を見ています</span></div>
+    <div class="spacts">
+      <button class="mini" data-read="${f.id}">読む</button>
+      <button class="btn go" data-keep="${f.id}">これを残す</button>
+    </div>
+  </div>`;
+}
+
+/** 見比べに出すページ。頭の 3 枚と真ん中と最後 — 表紙の違いと、途中や末尾の欠けが見える */
+function cmpPicks(n) {
+  return [...new Set([0, 1, 2, Math.floor(n / 2), n - 1])].filter((i) => i >= 0 && i < n).sort((a, b) => a - b);
+}
+
+/**
+ * 見比べの列に絵とページ数を入れる。**1 本ずつ順に**聞く — 並べて投げても
+ * 向こうで rar の索引作りが詰まるだけで、どの列も埋まらない時間が長くなる。
+ * 板を貼り直したら (列が DOM から消えたら) 降りる
+ */
+async function loadCompares() {
+  const cols = [...$('detail').querySelectorAll('.cmpcol[data-cmp-file]')];
+  for (const col of cols) {
+    if (!col.isConnected) return;
+    const id = Number(col.dataset.cmpFile);
+    const thumbs = col.querySelector('.cmpthumbs');
+    const pages = col.querySelector('.cmppages');
+    let ix;
+    try {
+      ix = await api(`/api/files/${id}/pages`);
+    } catch (e) {
+      pages.textContent = 'ページ数不明';
+      thumbs.innerHTML = `<span class="spmeta">開けません: ${esc(e.message)}</span>`;
+      continue;
+    }
+    if (!col.isConnected) return;
+    col.dataset.pages = String(ix.count);
+    pages.textContent = `${ix.count} ページ`;
+    thumbs.innerHTML = ix.count
+      ? cmpPicks(ix.count).map((i) => `<span class="cmpthumb">
+          <img src="/api/files/${id}/page/${i}" alt="${i + 1} ページ目" loading="lazy">${i + 1}</span>`).join('')
+      : `<span class="spmeta">${ix.nested ? '中身が書庫なので、ここでは絵を出せません' : '絵が見つかりません'}</span>`;
+  }
+  // ページ数が違う巻は言う。欠けのある方を捨てたい時に一番効く手がかり
+  for (const cmp of $('detail').querySelectorAll('.cmp')) {
+    const counts = [...cmp.querySelectorAll('.cmpcol')].map((c) => c.dataset.pages).filter((n) => n !== undefined);
+    const note = cmp.querySelector('.cmpnote');
+    if (note && new Set(counts).size > 1) {
+      note.hidden = false;
+      note.textContent = `ページ数が違います (${counts.join(' / ')})`;
+    }
+  }
+}
+
+/** 選んだ 1 本を残して、同じ巻の他を attic へ引く。**消さない**ので、間違えても attic から戻せる */
+async function keepFile(seriesId, fileId, button) {
+  const col = button.closest('.cmpcol');
+  const others = [...button.closest('.cmp').querySelectorAll('.cmpcol')].filter((c) => c !== col).length;
+  const name = col.querySelector('.nm')?.textContent.trim().split(/[\\/]/).pop() ?? '';
+  if (!confirm(`「${name}」を残して、ほかの ${others} 本を data/attic へ移します。\n\nよろしいですか?`)) return;
+  button.disabled = true;
+  button.innerHTML = '<span class="spin"></span> 移しています';
+  try {
+    const r = await api(`/api/series/${seriesId}/keep`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keep: fileId }),
+    });
+    toast(`${r.kept} を残しました${r.renamed ? ' (名前の (2) を外しました)' : ''}`, 5000);
+    await Promise.all([loadGrid(), loadNews(), loadStats()]);
+    if (sheetOpen() && lastDetail && lastDetail.id === seriesId) await openDetail(seriesId, 'keep');
+  } catch (e) {
+    toast('できません: ' + e.message, 6000);
+    button.disabled = false;
+    button.textContent = 'これを残す';
+  }
 }
 
 /**
@@ -1664,6 +1800,12 @@ function wireDetail(d) {
   $('detail').querySelectorAll('button[data-read]').forEach((b) => {
     b.addEventListener('click', () => openReader(Number(b.dataset.read)));
   });
+
+  // 同じ巻の見比べ。絵は貼った後に取りに行く
+  $('detail').querySelectorAll('button[data-keep]').forEach((b) => {
+    b.addEventListener('click', () => keepFile(id, Number(b.dataset.keep), b));
+  });
+  void loadCompares();
 
   // 選んだシリーズを外して自動へ戻す。**表紙はそのまま残す** — 次の取り直しで貼り替わる
   $('pick-clear')?.addEventListener('click', async () => {

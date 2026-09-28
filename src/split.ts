@@ -6,7 +6,7 @@ import {
   ArchiveError, extractEntryTo, isReadableArchive, readPage, readPageIndex,
   readZipEntries, readZipRaw, type PageIndex,
 } from './archive.js';
-import { parseFilename, planVolumeName } from './naming.js';
+import { parseFilename, planVolumeName, uniqueName } from './naming.js';
 import { findVolumeIn, type VolumeUnit } from './volume.js';
 import { resolveInsideRoot } from './reveal.js';
 import { ZipWriter } from './zip-write.js';
@@ -67,6 +67,14 @@ export interface SplitPart {
    * 嘘の数を出すより黙っている方がいい (`SplitPlan.pages` も同じ理由で 0)。
    */
   pages: number;
+  /**
+   * 棚に同じ巻が既にあった時の、**その既にある方の名前**。無ければ null。
+   *
+   * 当たっても断らない。こちらは ` (2)` を付けて置き、どちらを残すかは割った後に
+   * 人が中を見比べて決める (keep.ts)。以前は断っていたので、エクスプローラで
+   * 片方をどけてからでないと割れず、しかも中身を見比べる道が無かった
+   */
+  clash: string | null;
 }
 
 export interface SplitPlan {
@@ -306,13 +314,15 @@ export async function planSplit(db: Db, cfg: Config, fileId: number): Promise<Sp
       tail: parsed.tail,
     });
     if (!name) return { ...base, ok: false, reason: '新しいファイル名を作れません', parts: [] };
-    const full = `${name}${ext}`;
-    if (fs.existsSync(path.join(t.dir, full))) {
-      return { ...base, ok: false, reason: `同じ名前のファイルが既にあります: ${full}`, parts: [] };
-    }
+    const wanted = `${name}${ext}`;
+    // 棚に同じ名前があれば ` (2)` に逃がす。**上書きはしない** — 同じ巻でも中身が
+    // 違う (画質違い・欠けのある方) ことがあり、どちらが良いかは機械には分からない
+    const taken = new Set(parts.map((x) => x.name));
+    const full = uniqueName(t.dir, wanted, (at) => fs.existsSync(at) || taken.has(path.basename(at)));
     parts.push({
       volume: p.volume, name: full, members: p.members, as: p.as,
       pages: g.kind === 'nested' ? 0 : p.members.length,
+      clash: full === wanted ? null : wanted,
     });
   }
 
@@ -474,7 +484,7 @@ export async function runSplit(
  * 棚は NAS で `data/` は手元なので、`rename` では済まず実コピーになる (EXDEV)。
  * **大きさを確かめてからでないと元を消さない。**
  */
-function moveToAttic(cfg: Config, abs: string): string {
+export function moveToAttic(cfg: Config, abs: string): string {
   const dir = path.join(cfg.dataDir, 'attic');
   fs.mkdirSync(dir, { recursive: true });
 

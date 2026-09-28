@@ -740,6 +740,25 @@ export class Db {
   }
 
   /**
+   * ファイル 1 本の置き場所を付け替える (keep.ts で ` (2)` を外した時)。
+   *
+   * 行は作り直さず付け替えるだけ。読み直しに任せると別のファイルとして生まれ直し、
+   * 要ケアの印とページ索引が落ちる。行き先に**消えた印の付いた行**が残っていれば
+   * どかす (renameSeriesFolder と同じ理屈)。生きている行とは当たらない前提で、
+   * 当たったら UNIQUE がそのまま倒す。
+   */
+  moveFile(fileId: number, relPath: string): void {
+    const row = this.raw.prepare('SELECT root_id FROM files WHERE id = ?').get(fileId) as
+      | { root_id: string }
+      | undefined;
+    if (!row) return;
+    this.raw
+      .prepare('DELETE FROM files WHERE root_id = ? AND rel_path = ? AND id <> ? AND present = 0')
+      .run(row.root_id, relPath, fileId);
+    this.raw.prepare('UPDATE files SET rel_path = ? WHERE id = ?').run(relPath, fileId);
+  }
+
+  /**
    * 「ケアが必要」の印を立てる / 外す。**人しか呼ばない道** (SCHEMA の files.care を参照)。
    *
    * 外した時もメモは消さない — 一度直したつもりでまた戻す時に、何が起きていたかを

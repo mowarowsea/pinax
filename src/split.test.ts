@@ -227,17 +227,25 @@ test('巻ごとのフォルダの合本を、実際に 2 本へ割る', async ()
   }
 });
 
-test('同じ名前が既にあれば、何もせずに断る', async () => {
+test('同じ名前が既にあれば (2) を付けて割り、既にある方には触らない', async () => {
   const t = await shelf();
   const folder = path.join(t.dir, 'shelf', t.series);
   try {
     fs.writeFileSync(path.join(folder, '[試作者] 試し作品 第01巻.zip'), 'x');
     const plan = await planSplit(t.db, t.cfg, t.fileId);
-    assert.equal(plan.ok, false);
-    assert.match(String(plan.reason), /既にあります/);
-    await assert.rejects(() => runSplit(t.db, t.cfg, t.fileId), /既にあります/);
-    // 断った後も原本はそのまま
-    assert.equal(fs.existsSync(path.join(folder, t.name)), true);
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.parts.map((p) => p.name), [
+      '[試作者] 試し作品 第01巻 (2).zip',
+      '[試作者] 試し作品 第02巻.zip',
+    ]);
+    assert.deepEqual(plan.parts.map((p) => p.clash), ['[試作者] 試し作品 第01巻.zip', null]);
+
+    const r = await runSplit(t.db, t.cfg, t.fileId);
+    assert.deepEqual(r.made, plan.parts.map((p) => p.name));
+    // 既にあった方は上書きしない
+    assert.equal(fs.readFileSync(path.join(folder, '[試作者] 試し作品 第01巻.zip'), 'utf8'), 'x');
+    const idx = await readPageIndex(path.join(folder, r.made[0]), path.join(t.cfg.dataDir, 'pages'));
+    assert.equal(idx.pages.length, 2);
   } finally {
     t.db.close();
     fs.rmSync(t.dir, { recursive: true, force: true });
