@@ -1,0 +1,16 @@
+<!-- pinax のファビコン。アレクサンドリアの図書館の正面 (破風と柱)。
+     タブの 16px で潰れないよう柱は 3 本に抑えている。
+     ヘッダのロゴ横には、同じ絵柄を細かくした 36px 版を index.html に直に書いている。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="pinax">
+  <style>
+    g { fill: #AD3D2B; }
+    @media (prefers-color-scheme: dark) { g { fill: #d05942; } }
+  </style>
+  <g>
+    <path d="M2 11L16 3l14 8z"/>
+    <rect x="6" y="13" width="4" height="12"/>
+    <rect x="14" y="13" width="4" height="12"/>
+    <rect x="22" y="13" width="4" height="12"/>
+    <rect x="3" y="26" width="26" height="3"/>
+  </g>
+</svg>

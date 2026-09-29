@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>pinax — 蔵書</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23AD3D2B'/%3E%3Cpath d='M8 7h5.5c1.9 0 3 1 3 2.6V25H8zm8.5 2.6C16.5 8 17.6 7 19.5 7H24v18h-7.5z' fill='%23F6EFE7'/%3E%3C/svg%3E">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root {
   --brand: #AD3D2B;
@@ -66,6 +66,9 @@ header {
 }
 .bar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; flex-wrap: wrap; }
 .brand { display: flex; align-items: baseline; gap: 10px; margin-right: auto; }
+/* ロゴ横の図書館。抜きの部分はヘッダの地の色で塗ってテーマに追従させる */
+.mark { display: block; flex: none; align-self: center; width: 36px; height: 36px; fill: var(--brand); }
+.mark .cut { fill: var(--panel); }
 .logo {
   font: 700 22px/1 "Palatino Linotype", "Hiragino Mincho ProN", serif;
   letter-spacing: .14em; color: var(--brand); text-transform: lowercase;
@@ -583,6 +586,23 @@ button.cover { border: 0; padding: 0; font: inherit; }
 <header>
   <div class="bar">
     <div class="brand">
+      <svg class="mark" viewBox="0 0 36 36" aria-hidden="true">
+        <path d="M1.5 11.5L18 3l16.5 8.5z"/>
+        <path class="cut" d="M8 10L18 5l10 5z"/>
+        <circle cx="18" cy="8.2" r="1.4"/>
+        <rect x="3" y="12.5" width="30" height="2.2"/>
+        <g id="mark-col">
+          <rect x="5.2" y="15.6" width="4.6" height="1.4"/>
+          <rect x="6" y="17" width="3" height="10"/>
+          <rect class="cut" x="7.25" y="18" width=".5" height="8"/>
+          <rect x="5.5" y="27" width="4" height="1"/>
+        </g>
+        <use href="#mark-col" x="7"/>
+        <use href="#mark-col" x="14"/>
+        <use href="#mark-col" x="21"/>
+        <rect x="3" y="28.8" width="30" height="1.8"/>
+        <rect x="1.5" y="31.4" width="33" height="2"/>
+      </svg>
       <span class="logo">pinax</span>
       <span class="tagline">Never burn. Remember Alexandria.</span>
     </div>
