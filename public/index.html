@@ -65,12 +65,12 @@ header {
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 .bar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; flex-wrap: wrap; }
-.brand { display: flex; align-items: baseline; gap: 10px; margin-right: auto; }
-/* ロゴ横の図書館。抜きの部分はヘッダの地の色で塗ってテーマに追従させる */
-.mark { display: block; flex: none; align-self: center; width: 36px; height: 36px; fill: var(--brand); }
-.mark .cut { fill: var(--panel); }
+.brand { display: flex; align-items: center; gap: 8px; margin-right: auto; }
+/* ロゴ横の図書館。寸法は DryEyes / PowerDowner と揃えている (36px、文字 24px、スマホは 20px)。
+   抜きは地の色で塗らず evenodd の穴にする — 塗りだと端末の強制ダーク等で白く浮く */
+.mark { display: block; flex: none; width: 36px; height: 36px; fill: var(--brand); }
 .logo {
-  font: 700 22px/1 "Palatino Linotype", "Hiragino Mincho ProN", serif;
+  font: 700 24px/1 "Palatino Linotype", "Hiragino Mincho ProN", serif;
   letter-spacing: .14em; color: var(--brand); text-transform: lowercase;
 }
 .tagline { font-size: 11px; color: var(--ink-3); letter-spacing: .04em; }
@@ -543,7 +543,8 @@ button.cover { border: 0; padding: 0; font: inherit; }
 @media (max-width: 640px) {
   /* ヘッダは 2 段まで。棚を見に来ているので、道具立てに画面の 1/3 を渡さない */
   .bar { padding: 9px 14px; gap: 10px; }
-  .logo { font-size: 18px; }
+  .brand { gap: 6px; }
+  .logo { font-size: 20px; }
   .tagline { display: none; }
   .stats { font-size: 11px; gap: 9px; }
   #more { display: inline-block; padding: 5px 11px; letter-spacing: .1em; }
@@ -587,21 +588,15 @@ button.cover { border: 0; padding: 0; font: inherit; }
   <div class="bar">
     <div class="brand">
       <svg class="mark" viewBox="0 0 36 36" aria-hidden="true">
-        <path d="M1.5 11.5L18 3l16.5 8.5z"/>
-        <path class="cut" d="M8 10L18 5l10 5z"/>
-        <circle cx="18" cy="8.2" r="1.4"/>
-        <rect x="3" y="12.5" width="30" height="2.2"/>
-        <g id="mark-col">
-          <rect x="5.2" y="15.6" width="4.6" height="1.4"/>
-          <rect x="6" y="17" width="3" height="10"/>
-          <rect class="cut" x="7.25" y="18" width=".5" height="8"/>
-          <rect x="5.5" y="27" width="4" height="1"/>
-        </g>
-        <use href="#mark-col" x="7"/>
-        <use href="#mark-col" x="14"/>
-        <use href="#mark-col" x="21"/>
-        <rect x="3" y="28.8" width="30" height="1.8"/>
-        <rect x="1.5" y="31.4" width="33" height="2"/>
+        <!-- 破風 (中を抜いて丸窓)・梁・柱 4 本 (縦溝を抜く)・台座 2 段 -->
+        <path fill-rule="evenodd" d="
+          M1.5 11.5L18 3l16.5 8.5z M8 10L18 5l10 5z M16.6 8.2a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0-2.8 0z
+          M3 12.5h30v2.2H3z
+          M5.2 15.6h4.6V17H5.2z M6 17h3v10H6z M7.25 18h.5v8h-.5z M5.5 27h4v1h-4z
+          M12.2 15.6h4.6V17h-4.6z M13 17h3v10h-3z M14.25 18h.5v8h-.5z M12.5 27h4v1h-4z
+          M19.2 15.6h4.6V17h-4.6z M20 17h3v10h-3z M21.25 18h.5v8h-.5z M19.5 27h4v1h-4z
+          M26.2 15.6h4.6V17h-4.6z M27 17h3v10h-3z M28.25 18h.5v8h-.5z M26.5 27h4v1h-4z
+          M3 28.8h30v1.8H3z M1.5 31.4h33v2H1.5z"/>
       </svg>
       <span class="logo">pinax</span>
       <span class="tagline">Never burn. Remember Alexandria.</span>
