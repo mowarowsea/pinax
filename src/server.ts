@@ -84,6 +84,8 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
       // エクスプローラを開けるか。**ここは pinax 自身の話** (Windows で動いているか) で、
       // 見ている端末が PC かどうかは画面側がメディアクエリで決める (reveal.ts の頭)
       reveal: revealAbility(),
+      // 作品詳細の「続きを探す」の飛び先。空ならボタンを出さない
+      dryeyesUrl: cfg.dryeyesUrl || null,
       counts,
       lastScans: db.lastScans(cfg.roots.length || 1),
       cache: db.cacheStats(),

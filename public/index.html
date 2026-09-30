@@ -82,6 +82,7 @@ header {
   border-radius: 8px; padding: 7px 13px; font-size: 13px; white-space: nowrap;
 }
 .btn:hover { border-color: var(--brand); color: var(--brand); }
+a.btn { text-decoration: none; display: inline-block; }
 .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
 .btn.primary:hover { background: var(--brand-dim); color: #fff; }
 .btn[disabled] { opacity: .5; cursor: default; }
@@ -766,7 +767,7 @@ const state = {
  * エクスプローラは pinax が動いている PC からしか開けないので、
  * スマホで見ている時はボタンそのものを出さない (押せるのに何も起きないのが一番困る)。
  */
-const caps = { reveal: { available: false, reason: null } };
+const caps = { reveal: { available: false, reason: null }, dryeyesUrl: null };
 
 // ---- 棚 ----------------------------------------------------------------
 
@@ -1333,6 +1334,7 @@ function detailHtml(d) {
       <button class="btn" id="rn-open">名前を直す</button>
       ${caps.reveal.available ? '<button class="btn pc-only" id="reveal">エクスプローラで開く</button>' : ''}
       <button class="btn" id="rescan">この作品だけ再読込</button>
+      ${findLinkHtml(d)}
     </div>
     ${renameBoxHtml(d)}
   </div>
@@ -1756,6 +1758,18 @@ async function openDetail(id, mode = 'push') {
   $('detail').innerHTML = detailHtml(d);
   $('detail').scrollTop = refresh ? top : 0;
   wireDetail(d);
+}
+
+/**
+ * 続きを探す。DryEyes がアップロードサイトを横断検索して、そのまま監視に登録できる。
+ * pinax は作品名と作者を渡すだけ (外へは聞きに行かない)。綴りは棚のもの — 選んだシリーズ名ではない
+ */
+function findLinkHtml(d) {
+  if (!caps.dryeyesUrl) return '';
+  const p = new URLSearchParams({ find: d.title });
+  if (d.author) p.set('author', d.author);
+  const base = caps.dryeyesUrl.endsWith('/') ? caps.dryeyesUrl : caps.dryeyesUrl + '/';
+  return `<a class="btn" href="${esc(base + '?' + p)}" target="_blank" rel="noopener">続きを探す</a>`;
 }
 
 /** 詳細の中のボタンを繋ぐ。中身を貼り直すたびに呼ぶ */
@@ -3081,6 +3095,7 @@ async function loadStats() {
   const h = await api('/api/health');
   // エクスプローラを開けるかは接続元次第 (reveal.ts の頭)。サーバーの答えをそのまま使う
   if (h.reveal) caps.reveal = h.reveal;
+  caps.dryeyesUrl = h.dryeyesUrl ?? null;
   const c = h.counts;
   $('stats').innerHTML =
     `<span><b>${c.series}</b> 作品</span><span><b>${c.files}</b> 冊</span><span>表紙 <b>${c.covers}</b></span>`;

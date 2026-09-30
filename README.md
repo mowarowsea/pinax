@@ -47,6 +47,7 @@ npm start                            # http://localhost:3838
 | `bib.ttlDays` | `90` | 書誌キャッシュの寿命。**切れても捨てない** |
 | `bib.minIntervalMs` | `1200` | 外部 API を叩く最低間隔 |
 | `notify.ntfyUrl` | 空 | 新着の通知先。空でも画面のお知らせには残る |
+| `dryeyesUrl` | 空 | DryEyes の画面の URL (配信パス込み)。作品詳細に「続きを探す」が出て、DryEyes がアップロードサイトを横断検索する。空ならボタンを出さない |
 
 ## 蔵書の並び方
 

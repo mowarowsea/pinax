@@ -90,6 +90,12 @@ export interface Config {
     /** ntfy のトピック URL。空なら通知しない (画面のお知らせには必ず残る) */
     ntfyUrl: string;
   };
+  /**
+   * DryEyes の画面の URL (配信パス込み)。作品詳細の「続きを探す」がここへ
+   * `?find=<作品名>&author=<作者>` を付けて飛ぶ。空ならボタンを出さない。
+   * **pinax から外へは聞きに行かない** — 検索は DryEyes がやり、pinax は作品名を渡すだけ
+   */
+  dryeyesUrl: string;
 }
 
 const DEFAULTS: Config = {
@@ -107,6 +113,7 @@ const DEFAULTS: Config = {
     google: { apiKey: '' },
   },
   notify: { ntfyUrl: '' },
+  dryeyesUrl: '',
 };
 
 export function loadConfig(file = 'config.json'): Config {
