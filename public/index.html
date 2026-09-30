@@ -1763,22 +1763,10 @@ async function openDetail(id, mode = 'push') {
 /**
  * 続きを探す。DryEyes がアップロードサイトを横断検索して、そのまま監視に登録できる。
  * pinax は作品名と作者を渡すだけ (外へは聞きに行かない)。綴りは棚のもの — 選んだシリーズ名ではない
- *
- * **作品名はフォルダ名から取り直す。** d.title は巻数を探す都合で NFKC を通してあり、
- * 全角の「？」が半角になっている。サイトの検索は字面で当てるので、それでは 1 件も出ない
- * (なぜ僕の世界を誰も覚えていないのか？ で起きた)
  */
-function findTitleOf(d) {
-  const name = String(d.folder ?? '').split(/[\\/]/).pop()
-    .replace(/^\s*[\[［][^\]］]*[\]］]\s*/, '')
-    .replace(/\s*[(（]完[)）]\s*$/, '')
-    .trim();
-  return name || d.title;
-}
-
 function findLinkHtml(d) {
   if (!caps.dryeyesUrl) return '';
-  const p = new URLSearchParams({ find: findTitleOf(d) });
+  const p = new URLSearchParams({ find: d.title });
   if (d.author) p.set('author', d.author);
   const base = caps.dryeyesUrl.endsWith('/') ? caps.dryeyesUrl : caps.dryeyesUrl + '/';
   return `<a class="btn" href="${esc(base + '?' + p)}" target="_blank" rel="noopener">続きを探す</a>`;

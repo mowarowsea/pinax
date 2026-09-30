@@ -55,7 +55,7 @@ const PATH_MAX = 240;
  * **これは作品の同一性に関わらない**ので、巻としては同じものとして扱い、
  * 表示にだけ回す。ここを seriesKey や巻数に混ぜると、同じ巻が 2 つに割れる。
  */
-const TRAILING_TAGS = /\[([^\]]{1,16})\]/g;
+const TRAILING_TAGS = /[[［]([^\]］]{1,16})[\]］]/g;
 
 export interface SplitName {
   /** 拡張子・分割連番・同名回避の連番を落とした本体 */
@@ -148,19 +148,26 @@ export function parseFilename(name: string): ParsedName {
   // 完結マークは著者を切る前に落とす。`日常(完)` の () を巻数解釈へ持ち込ませない
   const { text: unmarked, completed } = stripCompletionMark(stem);
   const { author, rest } = takeAuthor(unmarked);
-  const { normalized, match } = findVolumeIn(rest);
+  const { normalized, match, toRaw } = findVolumeIn(rest);
+
+  // 巻数は正規化した文字列で探すが、名前は元の綴りで切り出す (NFKC は突き合わせ専用)。
+  // 位置を写せない珍しい並びの時だけ、正規化した方を切る
+  const mapped = match !== null && toRaw(match.start) >= 0;
+  const source = mapped ? rest : normalized;
+  const startAt = match ? (mapped ? toRaw(match.start) : match.start) : -1;
+  const endAt = match ? (mapped ? toRaw(match.end) : match.end) : -1;
 
   // 巻数より後ろは版・品質の印しか来ない。作品名には入れず、印だけ拾う
-  const tail = match ? normalized.slice(match.end) : '';
+  const tail = match ? source.slice(endAt) : '';
   const tags: string[] = [];
   TRAILING_TAGS.lastIndex = 0;
   for (const m of tail.matchAll(TRAILING_TAGS)) tags.push(m[1].trim());
 
-  const head = (match ? normalized.slice(0, match.start) : normalized).trim();
+  const head = (match ? source.slice(0, startAt) : rest).trim();
   return {
     author,
     // 巻数の手前が空なら、巻数表現しか書かれていない。作品名の代わりに全体を残す
-    title: head || normalized.trim(),
+    title: head || rest.trim(),
     volumeFrom: match?.from ?? null,
     volumeTo: match?.to ?? null,
     unit: match?.unit ?? '巻',
@@ -213,10 +220,14 @@ function bareVolumeAfterFolder(fileStem: string, folderName: string): { from: nu
   return single ? { from: Number(single[1]), to: Number(single[1]) } : null;
 }
 
-/** 前置きを剥がすためだけに均す。`_` と全角空白を空白に倒し、空白を畳む */
+/**
+ * 前置きを剥がすためだけに均す。`_` と全角空白を空白に倒し、空白を畳む。
+ * **NFKC はここではかけない** — 残りを人に見せる・名前に使うので、元の綴りを保つ。
+ * 比べる時だけ tightKey で畳む
+ */
 function foldForPrefix(s: string): string {
   return stripCompletionMark(String(s ?? ''))
-    .text.normalize('NFKC')
+    .text
     .replace(/[_\u3000]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -267,16 +278,18 @@ export function restAfterFolderTitle(fileTitle: string, folderTitle: string): st
 
   // 空白の入れ方は当てにならない (フォルダは `作品～副題～`、ファイルは `作品 ～副題～`)。
   // 空白を抜いた形で前置きかどうかを決める
-  const fileTight = file.replace(/\s+/g, '').toLowerCase();
-  const folderTight = folder.replace(/\s+/g, '').toLowerCase();
+  const tightKey = (s: string): string => s.normalize('NFKC').replace(/\s+/g, '').toLowerCase();
+  const fileTight = tightKey(file);
+  const folderTight = tightKey(folder);
   if (!fileTight.startsWith(folderTight)) return null;
   if (fileTight.length === folderTight.length) return '';
 
-  // 残りは人に見せるので、畳んだ方ではなく元の綴りから切り出す。空白を数えながら歩く
+  // 残りは人に見せるので、畳んだ方ではなく元の綴りから切り出す。
+  // 1 文字ずつ畳んだ長さを数えながら、前置きぶんを歩く
   let seen = 0;
   let i = 0;
   while (i < file.length && seen < folderTight.length) {
-    if (!/\s/.test(file[i])) seen++;
+    seen += tightKey(file[i]).length;
     i++;
   }
   return file.slice(i).replace(/^[\s._\-–—:：]+/, '').trim();
@@ -381,7 +394,8 @@ export function parseLibraryEntry(relPath: string): LibraryEntry {
 
 /** ファイル名として安全な 1 セグメントにする。中身が全部消えたら null */
 export function sanitizeSegment(raw: string, max = SEGMENT_MAX): string | null {
-  let s = String(raw ?? '').normalize('NFKC');
+  // NFKC はかけない。棚の名前は元の綴りで残す (全角の ？ を ? に崩さない)
+  let s = String(raw ?? '');
   s = s.replace(/[\u0000-\u001f\u007f]/g, '');
   s = s.replace(/[\\/:*?"<>|]/g, (c) => FORBIDDEN[c] ?? '');
   s = s.replace(/\s+/g, ' ').trim();

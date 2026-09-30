@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseFilename, parseLibraryEntry, planVolumeName, splitFilename } from './naming.js';
+import { parseFilename, parseLibraryEntry, planVolumeName, sanitizeSegment, splitFilename } from './naming.js';
 import { seriesKeyOf, stripCompletionMark } from './volume.js';
 
 /**
@@ -102,7 +102,23 @@ test('別巻の呼び名は、区切りが _ でも著者が無くても読む',
   assert.equal(a.sideLabel, '「メガドライブ ミニ」発売記念特別編');
 
   const b = parseLibraryEntry('[宮原るり] 恋愛ラボ(完)\\[宮原るり]_恋愛ラボ_～恋愛研究レポート～.rar');
-  assert.equal(b.sideLabel, '~恋愛研究レポート~');
+  // 残りは元の綴りのまま (NFKC は前置きの照合にだけ使う)
+  assert.equal(b.sideLabel, '～恋愛研究レポート～');
+});
+
+test('作品名は元の綴りで残す。NFKC は巻数を探すのと突き合わせにだけ使う', () => {
+  const a = parseFilename('[あかりん 細音啓] なぜ僕の世界を誰も覚えていないのか？ 第０１巻 ［DL版］.rar');
+  assert.equal(a.title, 'なぜ僕の世界を誰も覚えていないのか？');
+  assert.equal(a.volumeFrom, 1);
+  assert.deepEqual(a.tags, ['DL版']);
+
+  // 半角カナの濁点は前の文字と 1 文字に畳まれる。位置がずれずに切れること
+  const b = parseFilename('ｶﾞｯﾂ！ 第３巻.zip');
+  assert.equal(b.title, 'ｶﾞｯﾂ！');
+  assert.equal(b.volumeFrom, 3);
+
+  // 名前を組み直しても全角のまま
+  assert.equal(sanitizeSegment('なぜ僕の世界を誰も覚えていないのか？'), 'なぜ僕の世界を誰も覚えていないのか？');
 });
 
 test('別巻の呼び名は、空白の入れ方と大文字小文字が食い違っても読む', () => {
