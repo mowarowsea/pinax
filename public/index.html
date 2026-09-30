@@ -119,7 +119,8 @@ main { padding: 16px 20px 60px; }
   display: grid; gap: 18px 14px;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
 }
-.card { background: none; border: 0; padding: 0; text-align: left; display: flex; flex-direction: column; gap: 7px; }
+.card { display: flex; flex-direction: column; gap: 7px; }
+.card .cover { width: 100%; cursor: pointer; }
 .cover {
   position: relative; aspect-ratio: 2 / 3; border-radius: 6px; overflow: hidden;
   background: linear-gradient(150deg, var(--brand-soft), var(--line));
@@ -129,7 +130,7 @@ main { padding: 16px 20px 60px; }
 .cover .none {
   font: 600 11px/1.5 sans-serif; color: var(--ink-3); text-align: center; padding: 8px; word-break: break-word;
 }
-.card:hover .cover { outline: 2px solid var(--brand); outline-offset: 2px; }
+.card .cover:hover { outline: 2px solid var(--brand); outline-offset: 2px; }
 .badges { position: absolute; top: 5px; left: 5px; right: 5px; display: flex; gap: 4px; flex-wrap: wrap; }
 .badge { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; color: #fff; background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
 .badge.gap { background: var(--gap); }
@@ -787,13 +788,15 @@ function cardHtml(s) {
   if (s.careFiles) badges.push('<span class="badge care">要ケア</span>');
   if (s.completed) badges.push('<span class="badge done">完</span>');
   const range = h ? `1〜${h.max}${h.unit}` : (s.looseFiles ? `${s.looseFiles}点` : '');
-  return `<button class="card" data-id="${s.id}">
-    <span class="cover">${coverHtml(s.coverUrl, s.title)}
+  // 押せるのは表紙だけ。文字まで押せると、指の置き場がなくてスクロールしにくく、
+  // 題名や作者を選んで写せない
+  return `<div class="card">
+    <button class="cover" data-id="${s.id}" title="${esc(s.title)}を開く">${coverHtml(s.coverUrl, s.title)}
       ${favs.has(s.id) ? '<span class="fav-mark" aria-label="お気に入り">★</span>' : ''}
-      ${badges.length ? `<span class="badges">${badges.join('')}</span>` : ''}</span>
+      ${badges.length ? `<span class="badges">${badges.join('')}</span>` : ''}</button>
     <span class="c-title">${esc(s.title)}</span>
     <span class="c-meta">${esc(s.author ?? '著者不明')}${range ? ' · ' + range : ''}</span>
-  </button>`;
+  </div>`;
 }
 
 async function loadGrid() {
@@ -3087,8 +3090,8 @@ async function loadStats() {
 
 for (const g of ['grid', 'favgrid']) {
   $(g).addEventListener('click', (e) => {
-    const card = e.target.closest('.card');
-    if (card) openDetail(Number(card.dataset.id));
+    const cover = e.target.closest('.card .cover');
+    if (cover) openDetail(Number(cover.dataset.id));
   });
 }
 // 背景を叩いて閉じる。**押し始めが背景だった時だけ** —
