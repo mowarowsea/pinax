@@ -189,7 +189,7 @@ export async function searchRakuten(db: Db, cfg: Config, q: RakutenQuery): Promi
       // 直すのは人なので、管理画面のどこに何を貼るかまで言い切る
       const ip = await currentPublicIp();
       throw new RakutenAuthError(
-        `${RAKUTEN_APP_LIST} で 許可されたIP に ${ip ?? '今のグローバル IP (npm run whoami)'} を追加して下さい`,
+        `プロバイダがグローバルIPを変えたみたいです。${RAKUTEN_APP_LIST} で 許可されたIP に ${ip ?? '今のグローバル IP (npm run whoami)'} を追加して下さい`,
         `HTTP ${res.status} ${err}`
       );
     }
