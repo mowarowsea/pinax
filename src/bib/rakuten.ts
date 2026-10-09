@@ -3,6 +3,7 @@ import type { Db } from '../db.js';
 import { cachedFetch, ProviderStopError } from './cache.js';
 import { normalizeIsbn } from './ndl.js';
 import { seriesKeyOf } from '../volume.js';
+import { currentPublicIp } from '../public-ip.js';
 
 /**
  * 楽天ブックス書籍検索 API のアダプタ。
@@ -113,6 +114,14 @@ function errorOf(json: Record<string, unknown>): string | null {
   return null;
 }
 
+/** 楽天ウェブサービスのアプリ一覧。許可 IP はここから足す */
+const RAKUTEN_APP_LIST = 'https://webservice.rakuten.co.jp/app/list';
+
+/** 鍵は合っていて、接続元 IP だけが登録外か */
+function looksLikeIpProblem(detail: string): boolean {
+  return /CLIENT_IP_NOT_ALLOWED/i.test(detail);
+}
+
 /** 鍵・接続元 IP の問題か。相手の不調 (一時的) と区別する印 */
 function looksLikeAuthProblem(status: number, detail: string): boolean {
   if (status === 401 || status === 403) return true;
@@ -176,6 +185,14 @@ export async function searchRakuten(db: Db, cfg: Config, q: RakutenQuery): Promi
 
   const err = errorOf(json);
   if (err) {
+    if (looksLikeIpProblem(err)) {
+      // 直すのは人なので、管理画面のどこに何を貼るかまで言い切る
+      const ip = await currentPublicIp();
+      throw new RakutenAuthError(
+        `${RAKUTEN_APP_LIST} で 許可されたIP に ${ip ?? '今のグローバル IP (npm run whoami)'} を追加して下さい`,
+        `HTTP ${res.status} ${err}`
+      );
+    }
     if (looksLikeAuthProblem(res.status, err)) {
       throw new RakutenAuthError(
         '楽天が受け付けません。鍵か、登録した接続元 IP を確かめてください',
