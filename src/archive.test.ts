@@ -13,7 +13,13 @@ import { ArchiveError, contentTypeOf, isReadableArchive, readPage, readPageIndex
  * 読む側が見るのは「末尾から EOCD を探して中央ディレクトリを読む」道なので、
  * ここで作る形が壊れていれば読む側も落ちる = 試験になっている。
  */
-function makeZip(entries: { name: string; body: Buffer; deflate?: boolean; encrypted?: boolean }[]): Buffer {
+function makeZip(
+  entries: {
+    name: string; body: Buffer; deflate?: boolean; encrypted?: boolean;
+    /** 中央ディレクトリの大きさと位置を 0xffffffff にして、本当の値を ZIP64 の拡張領域へ入れる */
+    zip64?: boolean;
+  }[]
+): Buffer {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
   let at = 0;
@@ -42,11 +48,25 @@ function makeZip(entries: { name: string; body: Buffer; deflate?: boolean; encry
     cd.writeUInt16LE(flags, 8);
     cd.writeUInt16LE(e.deflate ? 8 : 0, 10);
     cd.writeUInt32LE(crc, 16);
-    cd.writeUInt32LE(packed.length, 20);
-    cd.writeUInt32LE(e.body.length, 24);
+    cd.writeUInt32LE(e.zip64 ? 0xffffffff : packed.length, 20);
+    cd.writeUInt32LE(e.zip64 ? 0xffffffff : e.body.length, 24);
     cd.writeUInt16LE(name.length, 28);
-    cd.writeUInt32LE(at, 42);
-    centrals.push(cd, name);
+    cd.writeUInt32LE(e.zip64 ? 0xffffffff : at, 42);
+    if (e.zip64) {
+      // 頭に関係の無い記録を 1 つ置いて、id で探していることも確かめる
+      const other = Buffer.from([0x55, 0x54, 0x01, 0x00, 0x00]);
+      const z = Buffer.alloc(4 + 24);
+      z.writeUInt16LE(0x0001, 0);
+      z.writeUInt16LE(24, 2);
+      z.writeBigUInt64LE(BigInt(e.body.length), 4);
+      z.writeBigUInt64LE(BigInt(packed.length), 12);
+      z.writeBigUInt64LE(BigInt(at), 20);
+      const extra = Buffer.concat([other, z]);
+      cd.writeUInt16LE(extra.length, 30);
+      centrals.push(cd, name, extra);
+    } else {
+      centrals.push(cd, name);
+    }
 
     at += lh.length + name.length + packed.length;
   }
@@ -90,6 +110,24 @@ test('ページは名前の自然順に並ぶ', async () => {
     ['1.jpg', '2.jpg', '010.jpg']
   );
   assert.equal(idx.format, 'zip');
+});
+
+/**
+ * 4GB を超える書庫は、中央ディレクトリの大きさと位置が 0xffffffff になり、本当の値は
+ * 拡張領域の ZIP64 の記録に入る。読まないと 0xffffffff の位置を読みに行って「壊れている」と言う
+ */
+test('ZIP64 の拡張領域から大きさと位置を読む', async () => {
+  const body = img(50);
+  const file = write(
+    'z64.zip',
+    makeZip([
+      { name: '001.jpg', body: img(10) },
+      { name: '002.jpg', body, deflate: true, zip64: true },
+    ])
+  );
+  const idx = await readPageIndex(file, dir);
+  assert.deepEqual(idx.pages.map((p) => [p.name, p.bytes]), [['001.jpg', 13], ['002.jpg', body.length]]);
+  assert.deepEqual(await readPage(file, '002.jpg', dir), body);
 });
 
 /** 章ごとのフォルダに分かれている実物がある (`149-155/0006.jpg`)。フォルダも数として読む */

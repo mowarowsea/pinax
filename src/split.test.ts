@@ -252,6 +252,46 @@ test('同じ名前が既にあれば (2) を付けて割り、既にある方に
   }
 });
 
+test('割っている間に同じ名前が置かれたら、上書きせずに割る前の棚へ戻す', async () => {
+  // 名前は下見の時に空いていたものだが、割っている数分の間に PowerDowner が置くことはある。
+  // Windows の rename は黙って上書きするので、ここで止めないと置かれた方が消える
+  const t = await shelf();
+  const folder = path.join(t.dir, 'shelf', t.series);
+  try {
+    const target = path.join(folder, '[試作者] 試し作品 第02巻.zip');
+    await assert.rejects(
+      runSplit(t.db, t.cfg, t.fileId, {
+        onProgress: (p) => {
+          if (p.phase === '仕上げ') fs.writeFileSync(target, 'あとから置かれた');
+        },
+      }),
+      /同じ名前のファイルがあります/
+    );
+    assert.equal(fs.readFileSync(target, 'utf8'), 'あとから置かれた', '上書きしない');
+    assert.ok(fs.existsSync(path.join(folder, t.name)), '原本は棚に残る');
+    assert.ok(!fs.existsSync(path.join(folder, '[試作者] 試し作品 第01巻.zip')), '先に置いた巻も下げる');
+    assert.deepEqual(fs.readdirSync(folder).filter((n) => n.includes('pinax-tmp')), []);
+  } finally {
+    t.db.close();
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test('原本を引けなければ、割った巻を下げて割る前の棚へ戻す', async () => {
+  // 両方並べたままにすると、直したかった重複 (合本と単巻) がそのまま増える
+  const t = await shelf();
+  const folder = path.join(t.dir, 'shelf', t.series);
+  try {
+    // attic を作れなくする (同じ名前のファイルを置いておく)
+    fs.writeFileSync(path.join(t.cfg.dataDir, 'attic'), 'x');
+    await assert.rejects(runSplit(t.db, t.cfg, t.fileId), /元に戻しました/);
+    assert.deepEqual(fs.readdirSync(folder), [t.name], '棚は割る前のまま');
+  } finally {
+    t.db.close();
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
 test('中身が書庫の合本は、取り出すだけで分割できる', async () => {
   // 中に書庫が 2 つ入った合本を組む。zip in zip なら手で作れる
   const inner = (pages: [string, string][]): Buffer => {

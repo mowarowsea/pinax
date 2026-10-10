@@ -131,6 +131,20 @@ export interface ZipEntry {
   encrypted: boolean;
 }
 
+const MAX32 = 0xffffffff;
+
+/** 拡張領域から ZIP64 の記録 (id 0x0001) の中身を探す。無ければ null */
+function zip64Extra(extra: Buffer): Buffer | null {
+  let p = 0;
+  while (p + 4 <= extra.length) {
+    const id = extra.readUInt16LE(p);
+    const size = extra.readUInt16LE(p + 2);
+    if (id === 0x0001) return extra.subarray(p + 4, Math.min(extra.length, p + 4 + size));
+    p += 4 + size;
+  }
+  return null;
+}
+
 /**
  * zip の目次を読む。末尾から EOCD を探して中央ディレクトリを 1 回で読む。
  * **前から舐めない** — 100MB を頭から読むのと、末尾の数十 KB を読むのとでは
@@ -185,16 +199,39 @@ function zipEntries(file: string): ZipEntry[] {
       // 0x800 が立っていれば UTF-8。立っていないものは作った PC の文字集合で、
       // 手元は日本語 Windows なので CP932 と読む (latin1 で読むと名前が化ける)
       const name = (flags & 0x800 ? raw.toString('utf8') : SJIS.decode(raw)).replace(/\\/g, '/');
+      const extraLen = cd.readUInt16LE(p + 30);
+      let bytes = cd.readUInt32LE(p + 24);
+      let packed = cd.readUInt32LE(p + 20);
+      let localHeader = cd.readUInt32LE(p + 42);
+      /**
+       * 4GB を超える書庫では、溢れた値が 0xffffffff になり、本当の値は拡張領域の
+       * ZIP64 の記録 (id 0x0001) に入る。**溢れたものだけ**が「展開後 → 圧縮後 →
+       * ローカルヘッダの位置」の順に詰めて入っている。読まないと 4GB より後ろのページを
+       * 0xffffffff の位置に探しに行き、「書庫が壊れている」と言うことになる
+       */
+      if (bytes === MAX32 || packed === MAX32 || localHeader === MAX32) {
+        const z = zip64Extra(cd.subarray(p + 46 + nlen, p + 46 + nlen + extraLen));
+        let at = 0;
+        const next = (): number | null => {
+          if (!z || at + 8 > z.length) return null;
+          const v = Number(z.readBigUInt64LE(at));
+          at += 8;
+          return v;
+        };
+        if (bytes === MAX32) bytes = next() ?? bytes;
+        if (packed === MAX32) packed = next() ?? packed;
+        if (localHeader === MAX32) localHeader = next() ?? localHeader;
+      }
       out.push({
         name,
-        bytes: cd.readUInt32LE(p + 24),
-        packed: cd.readUInt32LE(p + 20),
+        bytes,
+        packed,
         method: cd.readUInt16LE(p + 10),
         crc: cd.readUInt32LE(p + 16),
-        localHeader: cd.readUInt32LE(p + 42),
+        localHeader,
         encrypted: Boolean(flags & 1),
       });
-      p += 46 + nlen + cd.readUInt16LE(p + 30) + cd.readUInt16LE(p + 32);
+      p += 46 + nlen + extraLen + cd.readUInt16LE(p + 32);
     }
     return out.filter((e) => !e.name.endsWith('/'));
   } finally {

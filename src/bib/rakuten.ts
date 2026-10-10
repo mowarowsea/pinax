@@ -58,6 +58,21 @@ export class RakutenAuthError extends ProviderStopError {
   }
 }
 
+/**
+ * **問い合わせが多すぎると止められた** (`ProviderStopError` の楽天版)。
+ *
+ * 次の 1 冊を試しても同じ理由で落ちるので、ここで巡回を打ち切らせる。普通の失敗として
+ * 流すと、止められている間に試した巻にまで「駄目だった」の印 (`bib.cover_tried_at`) が
+ * 押され、60 日先送りになる。鍵の間違いとは**別の言葉で**知らせる — 直すものではなく、
+ * 待てば戻るもの (GoogleQuotaError と同じ筋)。
+ */
+export class RakutenRateError extends ProviderStopError {
+  constructor(detail: string) {
+    super('rakuten', '楽天に問い合わせが多すぎると言われました。次の巡回で続きから埋めます', detail);
+    this.name = 'RakutenRateError';
+  }
+}
+
 export function rakutenReady(cfg: Config): boolean {
   const r = cfg.bib.rakuten;
   return Boolean(r.applicationId && r.accessKey) && cfg.bib.providers.includes('rakuten');
@@ -176,6 +191,9 @@ export async function searchRakuten(db: Db, cfg: Config, q: RakutenQuery): Promi
     neverCacheStatuses: [400, 401, 403, 429, 500, 502, 503, 504],
   });
 
+  // 本文が JSON でないこともあるので、読む前に状態コードで見る
+  if (res.status === 429) throw new RakutenRateError(`HTTP 429 ${res.body.slice(0, 200)}`);
+
   let json: Record<string, unknown>;
   try {
     json = JSON.parse(res.body) as Record<string, unknown>;
@@ -185,6 +203,7 @@ export async function searchRakuten(db: Db, cfg: Config, q: RakutenQuery): Promi
 
   const err = errorOf(json);
   if (err) {
+    if (/too_many_requests|rate.?limit/i.test(err)) throw new RakutenRateError(`HTTP ${res.status} ${err}`);
     if (looksLikeIpProblem(err)) {
       // 直すのは人なので、管理画面のどこに何を貼るかまで言い切る
       const ip = await currentPublicIp();

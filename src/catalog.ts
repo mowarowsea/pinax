@@ -3,7 +3,7 @@ import {
 } from './cover-slot.js';
 import { completedOf, type Db, type SeriesPick, type SeriesRow, type VolumeRow } from './db.js';
 import { parseFilename, seriesLabel } from './naming.js';
-import { parseItem, seriesKeyOf } from './volume.js';
+import { findVolumeIn, parseItem, seriesKeyOf, type VolumeUnit } from './volume.js';
 import { publishedOf, shelfStateOf, type PublishedInfo, type ShelfState } from './published.js';
 
 /**
@@ -217,7 +217,12 @@ export interface ListOptions {
   /** 人が「ケアが必要」と印を付けたファイルを抱えている作品だけ。**総数にも効く** */
   care?: boolean;
   sort?: 'title' | 'author' | 'added' | 'volumes' | 'updated';
-  limit?: number;
+  /**
+   * 1 回に返す件数。数で渡すと 500 で頭打ち。**`'all'` は棚の全部** —
+   * 画面の棚と /api/missing はこちらを使う。500 で切ると、題名順で後ろにいる作品が
+   * 棚にも「続きが出ている」にも二度と出てこない (棚は 2026-09-18 の時点で 607 作品)
+   */
+  limit?: number | 'all';
   offset?: number;
 }
 
@@ -294,8 +299,17 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
     updated: 'volume_added_at DESC, s.id DESC',
   }[opts.sort ?? 'title'];
 
-  const limit = Math.min(opts.limit ?? 60, 500);
+  const limit = opts.limit === 'all' ? Infinity : Math.min(opts.limit ?? 60, 500);
   const offset = Math.max(opts.offset ?? 0, 0);
+
+  /**
+   * 外の書誌と突き合わせて決まる絞り込み (欠番・続き・未所持) は SQL で書けないので、
+   * 行を組み立ててから篩う。**篩ってからページを切る** — 先に LIMIT で切ると、
+   * 切られた側にいる作品がこの絞り込みに一生出てこない。買い逃しに直結する壊れ方
+   */
+  const postFilter = Boolean(opts.gapsOnly || opts.behindOnly || opts.missingOnly);
+  // SQLite の LIMIT -1 は「上限なし」
+  const page = postFilter ? [-1, 0] : [Number.isFinite(limit) ? limit : -1, offset];
 
   const rows = db.raw
     .prepare(
@@ -312,7 +326,7 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
          FROM series s ${clause}
         ORDER BY ${order} LIMIT ? OFFSET ?`
     )
-    .all(...params, limit, offset) as Record<string, unknown>[];
+    .all(...params, ...page) as Record<string, unknown>[];
 
   const items = rows.map((r) => {
     const volumes = db.listVolumes(Number(r.id));
@@ -347,11 +361,14 @@ export function listSeries(db: Db, opts: ListOptions = {}): { total: number; ite
     } satisfies SeriesSummary;
   });
 
+  if (!postFilter) return { total, items };
+
   let filtered = items;
   if (opts.gapsOnly) filtered = filtered.filter((i) => i.hasGap);
   if (opts.behindOnly) filtered = filtered.filter((i) => i.shelf.aheadCount > 0);
   if (opts.missingOnly) filtered = filtered.filter((i) => i.shelf.missingCount > 0);
-  return { total, items: filtered };
+  // 総数も篩った後の数で返す。「続きが出ている 12 件」と出たらその 12 件が全部並ぶように
+  return { total: filtered.length, items: filtered.slice(offset, offset + limit) };
 }
 
 export interface VolumeDetail {
@@ -635,7 +652,7 @@ export interface OwnQuery {
 
 export interface OwnAnswer {
   /** 問い合わせをどう読んだか。向こうで食い違いを追えるように返す */
-  parsed: { seriesKey: string; volumeFrom: number | null; volumeTo: number | null };
+  parsed: { seriesKey: string; volumeFrom: number | null; volumeTo: number | null; unit: VolumeUnit };
   owned: boolean;
   /** 所持のうち、問い合わせ範囲で埋まっていない巻。owned が false の時に見る */
   missing: number[] | null;
@@ -672,11 +689,14 @@ export function checkOwned(db: Db, q: OwnQuery): OwnAnswer {
     };
   }
 
+  /**
+   * **聞かれた単位の数直線だけを見る。** 第1〜150話と第01〜10巻を持っている作品に
+   * 「第11巻」を聞かれて、話の 11 で「持っている」と答えると、その巻は永久に落ちてこない
+   */
   const owned = new Set<number>();
   for (const s of hits) {
     for (const v of db.listVolumes(s.id)) {
-      if (!v.present) continue;
-      // 単位が違うものは同じ数直線に乗せない
+      if (!v.present || v.unit !== parsedItem.unit) continue;
       for (let i = v.volumeFrom; i <= v.volumeTo; i++) owned.add(i);
     }
   }
@@ -684,8 +704,8 @@ export function checkOwned(db: Db, q: OwnQuery): OwnAnswer {
   for (let i = parsedItem.volumeFrom; i <= parsedItem.volumeTo; i++) if (!owned.has(i)) missing.push(i);
 
   const range = parsedItem.volumeFrom === parsedItem.volumeTo
-    ? `第${parsedItem.volumeFrom}巻`
-    : `第${parsedItem.volumeFrom}-${parsedItem.volumeTo}巻`;
+    ? `第${parsedItem.volumeFrom}${parsedItem.unit}`
+    : `第${parsedItem.volumeFrom}-${parsedItem.volumeTo}${parsedItem.unit}`;
 
   return {
     parsed: parsedItem,
@@ -716,5 +736,12 @@ function parseOwnQuery(q: OwnQuery): OwnAnswer['parsed'] {
   else if (/^\s*[[［]/.test(title)) title = parseFilename(title).title;
 
   const p = parseItem({ title, volume: q.volume ?? null, rawText: rawText || null });
-  return { seriesKey: p.seriesKey, volumeFrom: p.volumeFrom, volumeTo: p.volumeTo };
+  /**
+   * 単位は parseItem と同じ順 (volume → title → rawText) で、**単位の書いてある最初のもの**から取る。
+   * parseItem 自体には足さない — PowerDowner と同一に保つ側の関数なので。
+   * どこにも書いていなければ巻。話を巻と取り違えても「持っていない」に倒れるだけで済む
+   */
+  const unitOf = (s: unknown): VolumeUnit | null => findVolumeIn(String(s ?? '')).match?.unit ?? null;
+  const unit = unitOf(q.volume) ?? unitOf(title) ?? unitOf(rawText) ?? '巻';
+  return { seriesKey: p.seriesKey, volumeFrom: p.volumeFrom, volumeTo: p.volumeTo, unit };
 }

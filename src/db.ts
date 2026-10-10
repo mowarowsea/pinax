@@ -603,8 +603,11 @@ export class Db {
     };
   }
 
-  /** 選び直しは上書き。**履歴は残さない** — 今どれを正としているかだけが要る */
-  setSeriesPick(input: Omit<SeriesPick, 'pickedAt'>): SeriesPick {
+  /**
+   * 選び直しは上書き。**履歴は残さない** — 今どれを正としているかだけが要る。
+   * `pickedAt` は前の選択へ戻す時だけ渡す (選び直しが空振りした時。server.ts の cover-pick)
+   */
+  setSeriesPick(input: Omit<SeriesPick, 'pickedAt'> & { pickedAt?: string }): SeriesPick {
     this.raw
       .prepare(
         `INSERT INTO series_pick (series_id, scope, group_key, title, author,
@@ -618,7 +621,7 @@ export class Db {
       )
       .run(
         input.seriesId, input.scope, input.groupKey, input.title, input.author,
-        input.queryTitle, input.queryAuthor, now()
+        input.queryTitle, input.queryAuthor, input.pickedAt ?? now()
       );
     return this.getSeriesPick(input.seriesId)!;
   }

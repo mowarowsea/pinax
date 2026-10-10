@@ -93,6 +93,8 @@ async function throttle(provider: string, minIntervalMs: number): Promise<void> 
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
 }
 
+const isOk = (status: number): boolean => status >= 200 && status < 300;
+
 function keyOf(provider: string, url: string): string {
   return crypto.createHash('sha256').update(`${provider}\n${url}`).digest('hex');
 }
@@ -115,6 +117,15 @@ export async function cachedFetch(db: Db, cfg: Config, opts: FetchOptions): Prom
       signal: AbortSignal.timeout(20_000),
     });
     const body = await res.text();
+    /**
+     * **繋がったが断られた時も、正しく取れていた古い値があればそちらを返す。**
+     * 外が落ちている時は例外 (繋がらない) だけでなく、503 のメンテ画面や 429 でも来る。
+     * これを「取れた答え」として焼くと、手元にあった正しい答えをエラーの本文で上書きして
+     * 失う — 「期限切れでも捨てない」が一番効くはずの場面で捨てることになる
+     */
+    if (!res.ok && hit && isOk(hit.status)) {
+      return { status: hit.status, body: hit.body, contentType: hit.contentType, cached: true, stale: true, fetchedAt: hit.fetchedAt };
+    }
     const ttl = (opts.ttlDays ?? cfg.bib.ttlDays) * 86_400_000;
     // 失敗応答は短く持つ。相手の一時的な不調を 90 日抱えないため
     const keepMs = res.ok ? ttl : Math.min(ttl, 3_600_000);

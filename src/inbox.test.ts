@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  bucketOf, bucketize, foldInbox, inboxKeyOf, splitInboxName, suspectAnswers,
+  applyMoves, bucketOf, bucketize, foldInbox, inboxKeyOf, splitInboxName, suspectAnswers,
   type Answer, type Move,
 } from './inbox.js';
 
@@ -192,4 +192,29 @@ test('仕分けても作品フォルダ名とファイル名は棚に入れる�
   const sorted = bucketize(plan);
   assert.equal(sorted.moves[0].to, path.join('_棚にある', TO));
   assert.equal(plan.moves[0].to, TO, '元の計画には触らない');
+});
+
+/**
+ * 計画は棚を見て空いた名前を選ぶが、`sort` が置くのはトレイの中。新しく落ちてきた
+ * 同じ巻でもう一度仕分けると、前に仕分けたファイルと同じ名前になる。
+ * Windows の rename は黙って上書きするので、ここで止めないと前の 1 本が消える
+ */
+test('仕分け先に同じ名前があれば動かさずに失敗へ数える', () => {
+  const dir = tray(['Sakuhin_01.rar']);
+  const logs = fs.mkdtempSync(path.join(os.tmpdir(), 'pinax-inbox-log-'));
+  try {
+    const sorted = bucketize({ moves: [move({ from: 'Sakuhin_01.rar' })], unresolved: [] });
+    const dst = path.join(dir, sorted.moves[0].to);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.writeFileSync(dst, '前に仕分けた方');
+
+    const r = applyMoves(sorted, dir, dir, logs);
+    assert.equal(r.moved, 0);
+    assert.equal(r.failed.length, 1);
+    assert.equal(fs.readFileSync(dst, 'utf8'), '前に仕分けた方', '上書きされていない');
+    assert.ok(fs.existsSync(path.join(dir, 'Sakuhin_01.rar')), '動かす側もトレイに残る');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(logs, { recursive: true, force: true });
+  }
 });

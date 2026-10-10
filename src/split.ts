@@ -10,6 +10,7 @@ import { parseFilename, planVolumeName, uniqueName } from './naming.js';
 import { findVolumeIn, type VolumeUnit } from './volume.js';
 import { resolveInsideRoot } from './reveal.js';
 import { ZipWriter } from './zip-write.js';
+import { renameNoClobber } from './move.js';
 
 /**
  * 合本 (第01-02巻) を巻ごとに割る。
@@ -460,7 +461,9 @@ export async function runSplit(
       page: 0, pages: 0, label: t.base,
     });
     for (let i = 0; i < plan.parts.length; i++) {
-      fs.renameSync(temps[i], path.join(t.dir, plan.parts[i].name));
+      // 名前は下見の時に空いていたものだが、割っている数分の間に同じ名前が置かれることはある。
+      // **上書きしない** — 当たったら全部やめて、棚を割る前に戻す
+      renameNoClobber(temps[i], path.join(t.dir, plan.parts[i].name));
       made.push(plan.parts[i].name);
     }
   } catch (e) {
@@ -471,7 +474,22 @@ export async function runSplit(
   }
 
   // 5. 原本を引く。**消さない** ("Never burn")
-  const attic = moveToAttic(cfg, t.abs);
+  let attic: string;
+  try {
+    attic = moveToAttic(cfg, t.abs);
+  } catch (e) {
+    /**
+     * 原本を引けなかった。moveToAttic は大きさを確かめるまで原本を消さないので、
+     * 原本はまだ棚にある。**置いた巻の方を下げて、割る前の棚に戻す** —
+     * 両方並べたままにすると、直したかった重複 (合本と単巻) がそのまま増える。
+     * 原本が見当たらない時だけは下げない (割った巻が唯一の中身になっている)
+     */
+    if (!fs.existsSync(t.abs)) {
+      throw new SplitError(`原本を引く途中で止まりました。割った巻は棚に残してあります: ${(e as Error).message}`);
+    }
+    for (const n of made) fs.rmSync(path.join(t.dir, n), { force: true });
+    throw new SplitError(`原本を引けなかったので、割った巻を下げて元に戻しました: ${(e as Error).message}`);
+  }
   return { fileId, from: t.base, made, attic };
 }
 
@@ -501,7 +519,14 @@ export function moveToAttic(cfg: Config, abs: string): string {
     if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
   }
   const size = fs.statSync(abs).size;
-  fs.copyFileSync(abs, dest);
+  try {
+    // 行き先は上で空いた名前を選んであるが、念のため上書きはさせない
+    fs.copyFileSync(abs, dest, fs.constants.COPYFILE_EXCL);
+  } catch (e) {
+    // 書きかけの写しを attic に残さない。原本は触っていない
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') fs.rmSync(dest, { force: true });
+    throw e;
+  }
   if (fs.statSync(dest).size !== size) {
     fs.rmSync(dest, { force: true });
     throw new SplitError('原本を引く途中で大きさが合わなくなりました。棚はそのままにしてあります');

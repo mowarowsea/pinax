@@ -324,6 +324,24 @@ test('同じ名前になる 2 本は (2) を付けて両方残す — 上書き�
   assert.equal(left.length, 2, '2 本あったものは 2 本のまま残す');
 });
 
+test('付け替え先に DB に載っていないファイルがあれば、上書きせずに全部戻す', async () => {
+  // 前のスキャンの後に置かれたファイルは計画から見えない。Windows の rename は
+  // 黙って上書きするので、ここで止めないと置かれたばかりの 1 本が消える
+  const folder = '[H] 置かれたばかり';
+  const id = seed(folder, '置かれたばかり', 'H', ['[H] 置かれたばかり 01.rar']);
+  const plan = planRename(db, root, id, { title: '置かれたばかり', author: 'H', completed: false });
+  assert.deepEqual(plan.moves.map((m) => m.to), ['[H] 置かれたばかり 第01巻.rar']);
+
+  const fresh = path.join(shelf, folder, '[H] 置かれたばかり 第01巻.rar');
+  fs.writeFileSync(fresh, 'スキャン前に置かれた');
+
+  await assert.rejects(applyRename(db, root, plan, dir), RenameError);
+  assert.equal(fs.readFileSync(fresh, 'utf8'), 'スキャン前に置かれた', '上書きされていない');
+  assert.ok(fs.existsSync(path.join(shelf, folder, '[H] 置かれたばかり 01.rar')), '元の名前のまま');
+  const row = db.raw.prepare('SELECT rel_path FROM files WHERE series_id = ?').get(id) as { rel_path: string };
+  assert.equal(row.rel_path, path.join(folder, '[H] 置かれたばかり 01.rar'), 'DB も戻っている');
+});
+
 test('長い書名と合本が混ざった作品 — 画面から来る実際の形', async () => {
   const folder = '[月みりん] 実は妹でした。';
   fs.mkdirSync(path.join(shelf, folder), { recursive: true });

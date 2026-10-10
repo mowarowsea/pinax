@@ -10,6 +10,7 @@ import type { VolumeUnit } from './volume.js';
 import { seriesKeyOf } from './volume.js';
 import { resolveInsideRoot } from './reveal.js';
 import { withShelfLock } from './lock.js';
+import { renameNoClobber } from './move.js';
 
 /**
  * 作品フォルダの名前を付け替える。
@@ -177,8 +178,14 @@ function planFileRenames(
    * 避けないと「A を B の名前へ、B を C の名前へ」と回った時に、A が B を
    * 上書きして 1 本消える。当たった時は ` (2)` を付ける — 同じ巻が 2 本あることは
    * 棚の「要確認」に出るので、どちらを捨てるかは中身を見た人が決められる。
+   *
+   * **大文字小文字は畳んで比べる。** Windows では `Foo 第01巻.rar` と `FOO 第01巻.rar` は
+   * 同じファイルで、区別して「空いている」と言うと片方へ上書きしに行く。
+   * それでも計画から見えないファイル (前のスキャンの後に置かれたもの) とは当たりうるので、
+   * 実行の側でも上書きはしない (move.ts)。
    */
-  const taken = new Set(wants.map((w) => w.from));
+  const fold = (s: string): string => s.toLowerCase();
+  const taken = new Set(wants.map((w) => fold(w.from)));
   const moves: FileRename[] = [];
   const stuck: string[] = [];
   for (const w of wants) {
@@ -186,8 +193,8 @@ function planFileRenames(
       stuck.push(w.from);
       continue;
     }
-    const name = uniqueName('', w.to, (x) => x !== w.from && taken.has(x));
-    taken.add(name);
+    const name = uniqueName('', w.to, (x) => fold(x) !== fold(w.from) && taken.has(fold(x)));
+    taken.add(fold(name));
     if (name !== w.from) moves.push({ id: w.id, from: w.from, to: name });
   }
   return { moves, stuck };
@@ -430,7 +437,9 @@ export function applyRename(
           missing++;
           continue;
         }
-        fs.renameSync(a, b);
+        // **上書きしない。** 計画から見えないファイル (前のスキャンの後に置かれた) と
+        // 当たったら、ここで投げて全部戻す
+        renameNoClobber(a, b);
         undo.push(() => fs.renameSync(b, a));
         renamed++;
       }

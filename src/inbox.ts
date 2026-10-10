@@ -4,6 +4,7 @@ import type { Db } from './db.js';
 import type { LibraryRoot } from './config.js';
 import { CONTENT_EXT, SPLIT_EXT, fitPath, parseFilename, planName, uniqueName } from './naming.js';
 import { seriesKeyOf, type VolumeUnit } from './volume.js';
+import { renameNoClobber } from './move.js';
 
 /**
  * 受け入れトレイを棚へ入れる。
@@ -513,7 +514,9 @@ export function applyMoves(plan: Plan, inboxDir: string, destRoot: string, logDi
       }
       try {
         fs.mkdirSync(path.dirname(dst), { recursive: true });
-        fs.renameSync(src, dst);
+        // **上書きしない。** 計画は棚を見て名前を選ぶが、`sort` の置き先はトレイの中なので、
+        // 前の仕分けで置いたファイルと当たりうる。当たったものは動かさずに失敗へ数える
+        renameNoClobber(src, dst);
         moved++;
         fs.writeSync(log, JSON.stringify({ at: new Date().toISOString(), from: src, to: dst }) + '\n');
       } catch (e) {

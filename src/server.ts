@@ -36,6 +36,15 @@ export class HttpError extends Error {
   }
 }
 
+/** `Origin` が自分 (`Host`) と同じ場所か。`null` (中身を名乗らないページ) は違うとみなす */
+function sameOrigin(origin: string, host: string | undefined): boolean {
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * HTTP の口。
  *
@@ -44,6 +53,8 @@ export class HttpError extends Error {
  *  - **他のサービスから叩く口 (`/api/own`) だけ共有トークンを要求する。**
  *    PowerDowner や DryEyes がここに「持ってる?」と聞きに来るので、
  *    誰でも蔵書の中身を列挙できる状態にはしない
+ *
+ * 鍵とは別に、**ブラウザが「よそのサイトから」と名乗った書き込みは断る** (下の onRequest)。
  */
 export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } = {}): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
@@ -51,6 +62,28 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   app.setErrorHandler((err: unknown, _req, reply) => {
     const status = err instanceof HttpError ? err.status : 500;
     reply.code(status).send({ error: err instanceof Error ? err.message : String(err) });
+  });
+
+  /**
+   * **よそのサイトからの書き込みを断る。**
+   *
+   * 書き込む口 (POST / DELETE) には鍵を掛けていない (LAN / Tailscale の中でしか開かない前提)。
+   * ただ、本文の無い POST はブラウザが下見 (preflight) 無しで送るので、見ている端末で開いた
+   * **よそのページ**から `fetch('http://localhost:3838/api/files/1/split', { method: 'POST', mode: 'no-cors' })`
+   * が通ってしまう — 合本を割る、棚を読み直す、を他人のページから起こせる。
+   *
+   * ブラウザは出どころを `Sec-Fetch-Site` で名乗るので、`cross-site` を断る。名乗らない古い
+   * ブラウザは `Origin` が自分と違う時に断る。どちらも付けない相手 (PowerDowner / DryEyes の
+   * サーバーから来る /api/own) はそのまま通す。
+   */
+  app.addHook('onRequest', async (req) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return;
+    const site = String(req.headers['sec-fetch-site'] ?? '');
+    const refused = 'よそのサイトからの書き込みは受け付けません';
+    if (site === 'cross-site') throw new HttpError(403, refused);
+    if (site) return;
+    const origin = req.headers.origin;
+    if (origin !== undefined && !sameOrigin(origin, req.headers.host)) throw new HttpError(403, refused);
   });
 
   const requireToken = (req: { headers: Record<string, unknown> }): void => {
@@ -122,7 +155,8 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
       // 人が「ケアが必要」と印を付けたファイルを抱えている作品だけ
       care: bool(qs.care) ?? false,
       sort: (qs.sort as 'title' | 'author' | 'added' | 'volumes' | 'updated' | undefined) ?? 'title',
-      limit: qs.limit ? Number(qs.limit) : undefined,
+      // `all` は棚の全部。画面の棚はこれで取る (catalog.ts の ListOptions.limit)
+      limit: qs.limit === 'all' ? 'all' : qs.limit ? Number(qs.limit) : undefined,
       offset: qs.offset ? Number(qs.offset) : undefined,
     });
   });
@@ -248,7 +282,8 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   app.get<{ Querystring: { kind?: string; limit?: string } }>('/api/missing', async (req) => {
     const kind = req.query.kind === 'gap' ? 'gap' : req.query.kind === 'all' ? 'all' : 'ahead';
     const limit = Math.min(Number(req.query.limit ?? 200), 1000);
-    const { items } = listSeries(db, { limit: 500 });
+    // **棚の全部から探す。** 数で切ると、切られた側の作品の続きが一覧に出ない
+    const { items } = listSeries(db, { limit: 'all' });
 
     const out = items
       .map((it) => {
@@ -419,6 +454,8 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     const groupKey = String(req.body?.groupKey ?? '').trim();
     if (!groupKey) throw new HttpError(400, 'groupKey が要ります');
 
+    // 選び直しが空振りした時に戻す先。setSeriesPick は上書きなので、先に控えておく
+    const before = db.getSeriesPick(id);
     const pick = db.setSeriesPick({
       seriesId: id,
       scope,
@@ -435,10 +472,18 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     });
 
     const result = await applyPick(db, cfg, id, { pick });
-    // 貼り直せなかったら指定も残さない。**「選んだのに何も起きない」状態を作らない**
-    if (result.error) {
-      db.clearSeriesPick(id);
+    if (result.error && !result.replaced) {
+      // **何も貼り替わっていない** (束が見つからない・相手が落ちている)。指定も前のものへ戻す。
+      // 「選んだのに何も起きない」状態を作らないためだが、消すまではしない —
+      // 消すと、人が前に選んでいた系列まで失う
+      if (before) db.setSeriesPick(before);
+      else db.clearSeriesPick(id);
       throw new HttpError(502, result.error);
+    }
+    if (result.error) {
+      // **書誌はもう選んだ束で貼り替わっている** (表紙を取る途中で打ち切った)。指定は残す —
+      // 外すと次の自動の巡回が書名から当て直して、直したばかりの取り違えへ戻る
+      return { ok: true, pick, result, warning: `表紙は途中で打ち切りました: ${result.error}` };
     }
     return { ok: true, pick, result };
   });
@@ -737,10 +782,23 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
   let indexChain: Promise<unknown> = Promise.resolve();
   const inFlight = new Map<number, Promise<PageIndex>>();
 
+  /**
+   * 書庫の今の姿を表す印。**ページの URL に付けて、中身が変われば URL も変わるようにする。**
+   *
+   * ページは 1 年の immutable で返すので、URL が同じなら二度と取りに来ない。ところが
+   * file id は同じ名前で中身を差し替えても変わらず、**DB を作り直すと別の本に振り直される** —
+   * id だけの URL では、ブラウザが別の本のページを覚えたまま出す。
+   * DB の行ではなく**実物の stat から作る** (行はスキャンまで古いままのことがある)。
+   */
+  const versionOf = (st: fs.Stats): string => `${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}`;
+
   const pageIndexOf = async (
     id: string,
     opts: { refresh?: boolean } = {}
-  ): Promise<{ fileId: number; row: Record<string, unknown>; abs: string; index: PageIndex; buildMs: number; cached: boolean }> => {
+  ): Promise<{
+    fileId: number; row: Record<string, unknown>; abs: string; index: PageIndex;
+    buildMs: number; cached: boolean; version: string;
+  }> => {
     const { row, abs, stat } = await fileAt(id);
     const fileId = Number(row.id);
     const ext = path.extname(abs).toLowerCase();
@@ -748,16 +806,17 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
       throw new HttpError(415, `${ext || 'この形式'} は開けません (zip と rar だけです)`);
     }
     const mtime = stat.mtime.toISOString();
+    const version = versionOf(stat);
 
     if (!opts.refresh) {
       const hit = db.getPageIndex(fileId, stat.size, mtime);
-      if (hit) return { fileId, row, abs, index: hit, buildMs: 0, cached: true };
+      if (hit) return { fileId, row, abs, index: hit, buildMs: 0, cached: true, version };
     }
 
     const running = inFlight.get(fileId);
     if (running) {
       const index = await running;
-      return { fileId, row, abs, index, buildMs: 0, cached: true };
+      return { fileId, row, abs, index, buildMs: 0, cached: true, version };
     }
 
     const job = indexChain.then(async () => {
@@ -780,7 +839,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     );
     try {
       const { index, buildMs } = await job;
-      return { fileId, row, abs, index, buildMs, cached: false };
+      return { fileId, row, abs, index, buildMs, cached: false, version };
     } finally {
       inFlight.delete(fileId);
     }
@@ -800,6 +859,8 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
       return {
         fileId: got.fileId,
         name: path.basename(String(got.row.rel_path)),
+        // ページの URL に `?v=` で付けて返す印 (versionOf)。付けた URL だけが 1 年持つ
+        v: got.version,
         format: got.index.format,
         count: got.index.pages.length,
         pages: got.index.pages.map((p, i) => ({ i, name: p.name, bytes: p.bytes })),
@@ -818,7 +879,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
    * **番号で指す。** 名前で指させると、書庫の中の名前がそのまま URL に出て、
    * 中身の名前を打ち替えただけで壊れる。並びは索引が決めたものが正。
    */
-  app.get<{ Params: { id: string; i: string } }>('/api/files/:id/page/:i', async (req, reply) => {
+  app.get<{ Params: { id: string; i: string }; Querystring: { v?: string } }>('/api/files/:id/page/:i', async (req, reply) => {
     const got = await pageIndexOf(req.params.id);
     const i = Number(req.params.i);
     const page = Number.isInteger(i) ? got.index.pages[i] : undefined;
@@ -827,10 +888,24 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
     /**
      * **同じ絵は二度取りに来させない。** 1 ページ 350KB 前後 (中央値) で
      * 1 冊 190 ページ前後あるので、行きつ戻りつするだけで軽く数十 MB になる。
-     * 中身が変われば mtime が動いて索引ごと作り直されるので、印は強く付けてよい。
+     *
+     * ただし 1 年持たせるのは**今の印 (`?v=`) が付いた URL だけ。** 印の無い URL や
+     * 古い印の URL を immutable で返すと、中身が変わってもブラウザが二度と聞きに来ない
+     * (versionOf の註)。そちらは毎回 ETag で確かめさせる — 変わっていなければ 304 で済む
      */
-    const tag = `"${String(got.row.size)}-${String(got.row.mtime)}-${i}"`;
-    if (String(req.headers['if-none-match'] ?? '') === tag) return reply.code(304).send();
+    const tag = `"${got.version}-${i}"`;
+    // 取り出せなかった時の応答には付けない。失敗まで 1 年覚えられると困る
+    const cacheHeaders = (): void => {
+      reply.header('ETag', tag);
+      reply.header(
+        'Cache-Control',
+        req.query.v === got.version ? 'private, max-age=31536000, immutable' : 'private, no-cache'
+      );
+    };
+    if (String(req.headers['if-none-match'] ?? '') === tag) {
+      cacheHeaders();
+      return reply.code(304).send();
+    }
 
     let buf: Buffer;
     try {
@@ -839,9 +914,8 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
       if (e instanceof ArchiveError) throw new HttpError(422, e.reason);
       throw e;
     }
+    cacheHeaders();
     reply.header('Content-Type', contentTypeOf(page.name));
-    reply.header('Cache-Control', 'private, max-age=31536000, immutable');
-    reply.header('ETag', tag);
     reply.header('Content-Length', String(buf.length));
     return reply.send(buf);
   });

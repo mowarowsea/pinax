@@ -47,6 +47,7 @@ npm start                            # http://localhost:3838
 | `bib.ttlDays` | `90` | 書誌キャッシュの寿命。**切れても捨てない** |
 | `bib.minIntervalMs` | `1200` | 外部 API を叩く最低間隔 |
 | `notify.ntfyUrl` | 空 | 新着の通知先。空でも画面のお知らせには残る |
+| `publicUrl` | 空 | 通知を押した時に開く pinax の URL (`http://100.x.x.x:3838` など)。空なら自分の IPv4 を当てるが、WSL などの仮想 NIC を掴むとスマホから開けないので、Tailscale で見るならその URL を書く |
 | `dryeyesUrl` | 空 | DryEyes の画面の URL (配信パス込み)。作品詳細に「続きを探す」が出て、DryEyes がアップロードサイトを横断検索する。空ならボタンを出さない |
 
 ## 蔵書の並び方
@@ -756,6 +757,8 @@ GET    /api/series?q=&gaps=&behind=&missing=&completed=&needsCover=&issues=&care
                                         care=1 で要ケアの本がある作品に絞る (これも総数に効く)
                                         sort=title|author|volumes|added|updated
                                         updated は「最後に巻が増えた日」の降順 (added は作品の登録日)
+                                        limit は数なら 500 で頭打ち。limit=all で棚の全部
+                                        gaps / behind / missing は篩ってからページを切る (総数も篩った数)
 GET    /api/missing?kind=ahead|gap|all   持っていない巻の一覧 (ahead=買い逃し / gap=取りこぼし)
 GET    /api/series/:id                  巻・ファイル・書誌つきの詳細
 POST   /api/series/:id/completed        完結を指定 ({ completed: true|false|null })
@@ -792,8 +795,11 @@ GET    /api/files/:id/care              今の要ケアの印とメモ
 POST   /api/files/:id/care              印を立てる / 外す ({ care: true|false, note })
                                         note を省くとメモに触らない。**外してもメモは消えない**
 GET    /api/files/:id/download          実ファイルを落とす
-GET    /api/files/:id/pages?refresh=1   書庫の中のページ一覧 (絵は返さない。索引だけ)
-GET    /api/files/:id/page/:i           ページ 1 枚。i は索引の並びの番号
+GET    /api/files/:id/pages?refresh=1   書庫の中のページ一覧 (絵は返さない。索引だけ)。
+                                        v は書庫の今の姿の印 (大きさと更新時刻から作る)
+GET    /api/files/:id/page/:i?v=        ページ 1 枚。i は索引の並びの番号。
+                                        v が今の印と合う時だけ 1 年の immutable を返す
+                                        (合わなければ ETag で毎回確かめさせる)
 GET    /api/bib/candidates?q=&author=&provider=
                                         表紙選びと同じ検索を、作品に紐付けずに開いたもの
                                         候補ごとに棚の決まりどおりの第01巻の名前を添える (拡張子なし)
@@ -829,6 +835,7 @@ GET    /api/bib/proxy?url=              許可した提供元への生の中継 
 | `src/zip-write.ts` | zip を書く。分割した先を作る時だけ使う (**無圧縮か、圧縮されたまま写す**) |
 | `src/split-job.ts` | 分割を子プロセスで走らせる。**親が死んだら子も降りる** |
 | `src/lock.ts` | 棚を触る仕事の排他。スキャンと付け替えを同時に走らせない |
+| `src/move.ts` | 棚の中で名前を変える。**行き先にファイルがあれば上書きせずに投げる** (Windows の rename は黙って上書きする) |
 | `src/archive.ts` | 書庫の中を読む。**読むだけ** — zip は素の Node、rar は wasm の unrar |
 | `src/reveal.ts` | エクスプローラで開く。**誰に許すかの判断もここ** |
 | `src/notify.ts` | ntfy 通知 |

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { Db } from '../db.js';
+import type { Db, VolumeRow } from '../db.js';
 import type { LibraryRoot } from '../config.js';
 import { CONTENT_EXT, SPLIT_EXT, parseLibraryEntry, seriesLabel } from '../naming.js';
 import { seriesKeyOf } from '../volume.js';
@@ -135,7 +135,7 @@ async function scanLocked(db: Db, root: LibraryRoot, relDir: string | null): Pro
   if (relDir !== null) for (const f of files) f.rel = path.join(relDir, f.rel);
 
   base.filesSeen = files.length;
-  const newVolumesBySeries = new Map<number, { label: string; vols: string[] }>();
+  const newVolumesBySeries = new Map<number, { label: string; vols: { from: number; label: string }[] }>();
 
   db.raw.exec('BEGIN');
   try {
@@ -175,14 +175,15 @@ async function scanLocked(db: Db, root: LibraryRoot, relDir: string | null): Pro
         if (v.created) {
           base.volumesAdded++;
           // 新刊は作品ごとにまとめて 1 件にする。分割書庫で 5 通も飛ばさないため
-          if (!baseline && !s.created) {
+          if (!baseline && !s.created && !alreadyOnShelf(db, v.row)) {
             const acc = newVolumesBySeries.get(s.row.id)
               ?? { label: seriesLabel(s.row.author, s.row.title), vols: [] };
-            acc.vols.push(
-              v.row.volumeFrom === v.row.volumeTo
+            acc.vols.push({
+              from: v.row.volumeFrom,
+              label: v.row.volumeFrom === v.row.volumeTo
                 ? `第${v.row.volumeFrom}${v.row.unit}`
-                : `第${v.row.volumeFrom}-${v.row.volumeTo}${v.row.unit}`
-            );
+                : `第${v.row.volumeFrom}-${v.row.volumeTo}${v.row.unit}`,
+            });
             newVolumesBySeries.set(s.row.id, acc);
           }
         }
@@ -210,7 +211,9 @@ async function scanLocked(db: Db, root: LibraryRoot, relDir: string | null): Pro
       : db.markGoneUnder(root.id, relDir + path.sep, startedAt);
 
     for (const [seriesId, acc] of newVolumesBySeries) {
-      db.addEvent('volume_added', acc.label, `${acc.vols.sort().join(' / ')} が増えました`, seriesId);
+      // 巻の番号で並べる。文字の順だと「第10巻 / 第2巻」になる
+      const vols = acc.vols.sort((a, b) => a.from - b.from).map((x) => x.label);
+      db.addEvent('volume_added', acc.label, `${vols.join(' / ')} が増えました`, seriesId);
     }
 
     db.raw.exec('COMMIT');
@@ -229,6 +232,24 @@ async function scanLocked(db: Db, root: LibraryRoot, relDir: string | null): Pro
     error: null,
   });
   return { ...base, elapsedMs: Date.now() - t0 };
+}
+
+/**
+ * 新しく出来た巻の行が、**棚に既にあった巻の言い直し**か。言い直しなら新刊とは告げない。
+ *
+ * 合本を割ると 第01巻 / 第02巻 の行が新しく出来るが、中身は昨日まで 第01-02巻 として
+ * 棚にあったもの。単巻を合本にまとめ直した時も同じ。これを新刊と告げると、
+ * 自分で割っただけなのに ntfy に「新刊」が飛ぶ。
+ *
+ * 見るのは同じ作品・同じ単位で **present の行**だけ。スキャンは最後に present を倒すので
+ * (markGone)、割る前の合本の行はこの時点ではまだ立っている。
+ */
+function alreadyOnShelf(db: Db, v: VolumeRow): boolean {
+  const others = db.listVolumes(v.seriesId).filter((o) => o.id !== v.id && o.present && o.unit === v.unit);
+  for (let i = v.volumeFrom; i <= v.volumeTo; i++) {
+    if (!others.some((o) => o.volumeFrom <= i && i <= o.volumeTo)) return false;
+  }
+  return true;
 }
 
 export async function scanAll(db: Db, roots: LibraryRoot[]): Promise<ScanResult[]> {

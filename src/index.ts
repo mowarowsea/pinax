@@ -29,7 +29,9 @@ function lanAddress(): string {
   return '127.0.0.1';
 }
 
-const appUrl = `http://${lanAddress()}:${cfg.port}`;
+// 通知を押した時の飛び先。**書いてあればそれを使う** — lanAddress は最初に見つかった
+// IPv4 を拾うだけなので、仮想 NIC を掴むとスマホから開けない (config.ts の publicUrl)
+const appUrl = (cfg.publicUrl || `http://${lanAddress()}:${cfg.port}`).replace(/\/+$/, '');
 
 async function sweep(reason: string): Promise<void> {
   if (!cfg.roots.length) {

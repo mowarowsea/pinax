@@ -102,6 +102,43 @@ test('所持の問い合わせ: 著者の違いで同じ作品が別物になら
   assert.equal(a.owned, true);
 });
 
+test('所持の問い合わせ: 話は巻の数直線に混ぜない', () => {
+  // 話の 5 を見て「第05巻を持っている」と答えると、その巻は永久に落ちてこない
+  seed('[作者] 話も巻もある作品', '話も巻もある作品', '作者', [[1, 20, '話'], [1, 2, '巻']]);
+
+  const vol = checkOwned(db, { title: '話も巻もある作品', volume: '5' });
+  assert.equal(vol.owned, false);
+  assert.deepEqual(vol.missing, [5]);
+  assert.equal(vol.parsed.unit, '巻');
+
+  // 話で聞かれたら話の数直線で答える
+  const ep = checkOwned(db, { title: null, rawText: '[作者] 話も巻もある作品 第05話' });
+  assert.equal(ep.parsed.unit, '話');
+  assert.equal(ep.owned, true);
+  assert.match(ep.reason, /第5話/);
+});
+
+test('絞り込み (欠番) は篩ってからページを切る', () => {
+  // 先に LIMIT で切ると、題名順で後ろにいる作品が絞り込みに一生出てこない
+  const put = (title: string, vols: number[]): number => {
+    const { row } = db.upsertSeries({
+      rootId: 'pager', folder: title, seriesKey: seriesKeyOf(title), title, author: null, completed: false,
+    });
+    for (const v of vols) db.upsertVolume({ seriesId: row.id, volumeFrom: v, volumeTo: v, unit: '巻', completed: false });
+    return row.id;
+  };
+  put('あいう', [1]);
+  put('かきく', [1]);
+  put('さしす', [1]);
+  const last = put('んんん', [1, 3]);
+
+  const gaps = listSeries(db, { rootId: 'pager', gapsOnly: true, limit: 2 });
+  assert.equal(gaps.total, 1, '総数も篩った後の数');
+  assert.deepEqual(gaps.items.map((i) => i.id), [last]);
+
+  assert.equal(listSeries(db, { rootId: 'pager', limit: 'all' }).items.length, 4);
+});
+
 // ---- 完結の指定 -----------------------------------------------------------
 
 test('完結の指定は人が勝つ。フォルダの印は書き換えない', () => {

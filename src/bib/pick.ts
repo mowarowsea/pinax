@@ -137,6 +137,12 @@ export interface PickResult {
   coversWritten: number;
   /** 表紙を取れなかった板の名前 (`第03巻` / `外伝`) */
   coverMissed: string[];
+  /**
+   * 古い書誌と表紙を落として、選んだ束で貼り直しに入ったか。
+   * **error があっても true なら、棚はもう選んだ束の側に移っている** — 呼ぶ側は
+   * 指定を戻してはいけない (戻すと、次の自動の巡回が書名から当て直して取り違えへ戻る)
+   */
+  replaced: boolean;
   /** 回しても無駄なので打ち切ったか (enrich.ts の EnrichResult と同じ) */
   stopped: boolean;
   error: string | null;
@@ -166,7 +172,7 @@ export async function applyPick(
     seriesId, label,
     scope: pick?.scope ?? '', groupKey: pick?.groupKey ?? '', title: pick?.title ?? '',
     recordCount: 0, publishedMax: null, bibWritten: 0, coversWritten: 0, coverMissed: [],
-    stopped: false, error: null,
+    replaced: false, stopped: false, error: null,
   };
   if (!s) return { ...out, error: '作品がありません' };
   if (!pick) return { ...out, error: 'この作品にはまだシリーズが選ばれていません' };
@@ -196,6 +202,7 @@ export async function applyPick(
 
   db.raw.prepare('DELETE FROM bib WHERE series_id = ?').run(seriesId);
   db.raw.prepare('DELETE FROM covers WHERE series_id = ? AND pinned = 0').run(seriesId);
+  out.replaced = true;
 
   const byVol = byVolumeOf(group);
   out.publishedMax = group.volumeMax;
@@ -251,7 +258,12 @@ export async function applyPick(
   });
   out.coversWritten += pasted.written;
   out.coverMissed.push(...pasted.missed);
-  if (pasted.stopped) return { ...out, stopped: true, error: pasted.error };
+  if (pasted.stopped) {
+    // 打ち切っても、焼けた分で代表表紙は貼り直しておく。古い表紙は上で落としてあるので、
+    // ここを飛ばすと棚から作品の顔が消える (Google の 1 日の上限で普通に来る)
+    refreshSeriesCover(db, seriesId);
+    return { ...out, stopped: true, error: pasted.error };
+  }
 
   /**
    * 巻の表紙が 1 枚も焼けなかった作品 (単巻もの、全部が合本の作品) は、

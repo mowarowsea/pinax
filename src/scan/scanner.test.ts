@@ -78,3 +78,16 @@ test('読めないフォルダでは蔵書を倒さない', async () => {
   assert.deepEqual(files(B).map((f) => f.present), [1]);
   assert.equal(files(A).filter((f) => f.present === 1).length, 3);
 });
+
+test('合本を割っただけでは新刊と告げない — 本物の新刊は告げる', async () => {
+  // 最初のテストで 第01-03巻 を割った。出来た 第01〜03巻 は昨日まで棚にあったもの
+  const added = (): string[] =>
+    (db.raw.prepare("SELECT detail FROM events WHERE kind = 'volume_added' ORDER BY id").all() as { detail: string }[])
+      .map((e) => e.detail);
+  assert.deepEqual(added(), []);
+
+  put(A, `${A} 第10巻.zip`);
+  put(A, `${A} 第04巻.zip`);
+  await scanFolder(db, root, A);
+  assert.deepEqual(added(), ['第4巻 / 第10巻 が増えました'], '巻の番号で並ぶ (文字の順だと 第10巻 が先に来る)');
+});

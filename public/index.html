@@ -801,7 +801,7 @@ function cardHtml(s) {
 }
 
 async function loadGrid() {
-  const p = new URLSearchParams({ sort: state.sort, limit: '500' });
+  const p = new URLSearchParams({ sort: state.sort, limit: 'all' });
   if (state.q) p.set('q', state.q);
   if (state.gaps) p.set('gaps', '1');
   if (state.behind) p.set('behind', '1');
@@ -1690,7 +1690,7 @@ async function loadCompares() {
     pages.textContent = `${ix.count} ページ`;
     thumbs.innerHTML = ix.count
       ? cmpPicks(ix.count).map((i) => `<span class="cmpthumb">
-          <img src="/api/files/${id}/page/${i}" alt="${i + 1} ページ目" loading="lazy">${i + 1}</span>`).join('')
+          <img src="/api/files/${id}/page/${i}?v=${encodeURIComponent(ix.v)}" alt="${i + 1} ページ目" loading="lazy">${i + 1}</span>`).join('')
       : `<span class="spmeta">${ix.nested ? '中身が書庫なので、ここでは絵を出せません' : '絵が見つかりません'}</span>`;
   }
   // ページ数が違う巻は言う。欠けのある方を捨てたい時に一番効く手がかり
@@ -2174,7 +2174,9 @@ async function choosePickedGroup(btn) {
         queryTitle: picker.q, queryAuthor: picker.author,
       }),
     });
-    toast(`${g.title} にしました — 書誌 ${r.result.bibWritten} / 表紙 ${r.result.coversWritten} 枚`, 5000);
+    // 書誌は貼り替わったが表紙の途中で打ち切った時は、その理由も添える (鍵・1 日の上限)
+    toast(`${g.title} にしました — 書誌 ${r.result.bibWritten} / 表紙 ${r.result.coversWritten} 枚` +
+      (r.warning ? ` — ${r.warning}` : ''), r.warning ? 8000 : 5000);
     await openDetail(picker.seriesId, 'keep');
     await loadGrid();
   } catch (e) {
@@ -2367,6 +2369,8 @@ const RD_TRIM_W = 400;
 
 const reader = {
   fileId: null,
+  /** 書庫の今の姿の印 (/pages が返す)。ページの URL に付けないと、差し替えた本の古い絵が出続ける */
+  v: '',
   pages: [],
   page: 0,
   /** null = 割らない / 1 = 右半分 / 0 = 左半分。**右から先に読む** */
@@ -2391,7 +2395,7 @@ const reader = {
 };
 
 const readerOpen = () => !$('rd').hidden;
-const rdUrl = (i) => `/api/files/${reader.fileId}/page/${i}`;
+const rdUrl = (i) => `/api/files/${reader.fileId}/page/${i}?v=${encodeURIComponent(reader.v)}`;
 
 /** localStorage は端末ごと。**PC とスマホで別々に覚える**が、それでいい */
 function rdMode() {
@@ -2842,6 +2846,7 @@ async function openReader(fileId, mode = 'push') {
   try {
     const r = await api(`/api/files/${fileId}/pages`);
     if (reader.fileId !== fileId || !readerOpen()) return;
+    reader.v = r.v;
     reader.pages = r.pages;
     // 読みかけから再開する。ページ数が変わっていても (中身を差し替えた) はみ出さない
     reader.page = Math.max(0, Math.min(r.pages.length - 1, rdSavedPage(fileId)));

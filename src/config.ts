@@ -91,6 +91,12 @@ export interface Config {
     ntfyUrl: string;
   };
   /**
+   * 外から pinax の画面を開く URL (`http://100.x.x.x:3838` など)。ntfy の通知を押した時の飛び先。
+   * **空なら自分の IPv4 を当てる**が、最初に見つかったものを拾うだけなので、WSL や Hyper-V の
+   * 仮想 NIC (172.x) を掴むとスマホから開けない。Tailscale で見るならその URL を書く
+   */
+  publicUrl: string;
+  /**
    * DryEyes の画面の URL (配信パス込み)。作品詳細の「続きを探す」がここへ
    * `?find=<作品名>&author=<作者>` を付けて飛ぶ。空ならボタンを出さない。
    * **pinax から外へは聞きに行かない** — 検索は DryEyes がやり、pinax は作品名を渡すだけ
@@ -113,6 +119,7 @@ const DEFAULTS: Config = {
     google: { apiKey: '' },
   },
   notify: { ntfyUrl: '' },
+  publicUrl: '',
   dryeyesUrl: '',
 };
 
