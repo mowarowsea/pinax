@@ -349,6 +349,12 @@ export class Db {
     if (!cols('bib').has('cover_tried_at')) {
       this.raw.exec('ALTER TABLE bib ADD COLUMN cover_tried_at TEXT');
     }
+    // その ISBN で NDL のサムネイルを試した時刻 (bib/covers.ts の markNdlTried)。
+    // cover_tried_at とは別に持つ — あちらは巡回の順番と間隔の印で、
+    // 「NDL にもう聞いたか」は表紙を取りに行く**道**によって押されたり押されなかったりする
+    if (!cols('bib').has('ndl_tried_at')) {
+      this.raw.exec('ALTER TABLE bib ADD COLUMN ndl_tried_at TEXT');
+    }
     // 人が画面で決めた完結。フォルダ由来の completed とは別列 (SCHEMA 側の註を参照)
     if (!cols('series').has('completed_user')) {
       this.raw.exec('ALTER TABLE series ADD COLUMN completed_user INTEGER');

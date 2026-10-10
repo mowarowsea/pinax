@@ -6,7 +6,7 @@ import { seriesKeyOf } from '../volume.js';
 import { ProviderStopError } from './cache.js';
 import { ndlCandidate, type Candidate } from './candidates.js';
 import {
-  coverPinnedAt, fetchAndBurn, fetchCover, hasCoverAt, imageHostAllowed, writeCover,
+  coverPinnedAt, fetchAndBurn, fetchCover, hasCoverAt, imageHostAllowed, markNdlTried, writeCover,
 } from './covers.js';
 import { ndlThumbnailUrl, type NdlRecord } from './ndl.js';
 
@@ -127,6 +127,8 @@ async function burnCandidate(
 ): Promise<boolean> {
   if (!c.imageUrl || !imageHostAllowed(c.imageUrl)) return false;
   const burned = await fetchAndBurn(cfg, `${c.provider}-image`, c.imageUrl);
+  // NDL の候補の絵は、その ISBN の NDL サムネイルそのもの。巡回が聞き直さないように印を押す
+  if (c.provider === 'ndl') markNdlTried(db, seriesId, c.isbn);
   if (!burned) return false;
   writeCover(db, {
     seriesId, slot, provider: c.provider, sourceUrl: c.imageUrl, isbn: c.isbn, burned,

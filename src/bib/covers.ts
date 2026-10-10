@@ -149,6 +149,21 @@ export function writeCover(db: Db, input: WriteCoverInput): void {
     );
 }
 
+/**
+ * その ISBN で NDL のサムネイルを試した印を bib に押す。**取れなかった時こそ押す。**
+ *
+ * 巻ごとの巡回 (enrich.ts の fillVolumeCovers) は、この印がある巻だけ NDL を飛ばす。
+ * 「単巻で持っているなら最初の取得で試したはず」と見なすと、1 作品 20 枚の予算から
+ * あふれた巻や合本でしか持っていない巻が、一度も NDL に聞かれないまま楽天と Google だけで
+ * 諦められる — NDL が絵を持っていても棚に付かない。
+ */
+export function markNdlTried(db: Db, seriesId: number, isbn: string | null): void {
+  if (!isbn) return;
+  db.raw
+    .prepare('UPDATE bib SET ndl_tried_at = ? WHERE series_id = ? AND isbn = ?')
+    .run(new Date().toISOString(), seriesId, isbn);
+}
+
 /** その板の絵を人が選んでいるか。**立っていれば自動の巡回は手を出さない** */
 export function coverPinnedAt(db: Db, seriesId: number, slot: CoverSlot): boolean {
   return Boolean(
@@ -226,7 +241,11 @@ export async function fetchCover(
 
   // ---- ISBN で当てる道。**手元の本と同じ版**の絵が付く ----------------------
 
-  if (!opts.skipNdl && (await burn(ndlThumbnailUrl(isbn), 'ndl', 'ndl-thumbnail'))) return 'ndl';
+  if (!opts.skipNdl) {
+    const got = await burn(ndlThumbnailUrl(isbn), 'ndl', 'ndl-thumbnail');
+    markNdlTried(db, seriesId, isbn);
+    if (got) return 'ndl';
+  }
 
   if (rakutenReady(cfg)) {
     const rec = await findRakutenByIsbn(db, cfg, isbn);
