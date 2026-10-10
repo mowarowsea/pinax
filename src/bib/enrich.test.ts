@@ -33,7 +33,7 @@ const paste = (id: number, slot: CoverSlot) =>
     burned: { file: `${id}-${JSON.stringify(slot)}.jpg`, bytes: 1, contentType: 'image/jpeg' },
   });
 
-test('完結していて持っている巻の表紙が全部あれば、巡回から外す', () => {
+test('持っている巻の表紙が全部あれば、巡回から外す', () => {
   const id = seed('揃った完結', true, [[1, 1], [2, 2]]);
   paste(id, volumeSlot(1));
   assert.equal(seriesSettled(db, id), false, '第02巻の表紙がまだ無い');
@@ -41,13 +41,13 @@ test('完結していて持っている巻の表紙が全部あれば、巡回�
   assert.equal(seriesSettled(db, id), true);
 });
 
-test('完結していなければ、表紙が揃っていても回り続ける (新刊の書誌を取るため)', () => {
-  // 代表表紙があるだけで外していた頃は、ここで「第2巻まで確認」が止まっていた
+test('完結していなくても、手元の巻の表紙が揃えば外す。新しい巻が来たら戻る', () => {
   const id = seed('続いている', false, [[1, 1], [2, 2]]);
   paste(id, volumeSlot(1));
   paste(id, volumeSlot(2));
-  paste(id, SERIES_SLOT);
-  assert.equal(seriesSettled(db, id), false);
+  assert.equal(seriesSettled(db, id), true);
+  db.upsertVolume({ seriesId: id, volumeFrom: 3, volumeTo: 3, unit: '巻', completed: false });
+  assert.equal(seriesSettled(db, id), false, '第03巻の表紙がまだ無い');
 });
 
 test('合本は覆う巻を 1 巻ずつ見る', () => {

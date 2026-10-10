@@ -1,6 +1,6 @@
 import type { Config } from '../config.js';
 import { SERIES_SLOT, slotKey, volumeSlot } from '../cover-slot.js';
-import { completedOf, type Db } from '../db.js';
+import type { Db } from '../db.js';
 import { ProviderStopError } from './cache.js';
 import { fetchCover, hasCoverAt, refreshSeriesCover } from './covers.js';
 import { byVolume, searchNdl } from './ndl.js';
@@ -198,10 +198,10 @@ function hasVolumeCover(db: Db, seriesId: number): boolean {
 }
 
 /**
- * 作品を巡回から外してよいか。**外してよいのは、もう外に聞いても何も増えない作品だけ。**
+ * 作品を巡回から外してよいか。**手元にある巻の表紙が全部あれば外す。**
  *
- *   完結の印がある (フォルダの `(完)` か、人の指定)  … 新刊は出ない
- *   持っている巻の表紙が全部ある                    … 取りに行く絵が残っていない
+ * 合本を割った、新刊を棚に足した、で表紙の無い巻ができれば、その時点でまた巡回に戻る。
+ * 完結かどうかは見ない — 揃っている作品に外の書誌を聞き直しても、棚に増えるものが無い。
  *
  * 合本 (第01-05巻) は覆う巻を 1 巻ずつ見る。合本は覆う巻の絵を借りて出すので
  * (catalog.ts の coverFor)、覆う巻が全部埋まっていれば合本の板も埋まって見える。
@@ -209,8 +209,11 @@ function hasVolumeCover(db: Db, seriesId: number): boolean {
  * 巻を 1 つも持っていない作品 (単巻もの) は、代表表紙があれば外す。
  *
  * 以前は「代表表紙がある」だけで外していた。それだと 1 枚付いた時点で二度と
- * 書誌を取り直さず、「第5巻まで確認」が取った日のまま止まって新刊を見逃し、
- * 取った後に出た巻は ISBN が無いので巻ごとの巡回にも乗らなかった。
+ * 書誌を取り直さず、取った後に出た巻を棚に足しても ISBN が無いので
+ * 巻ごとの巡回にも乗らず、表紙が永久に付かなかった。
+ *
+ * **揃っている作品の「第N巻まで確認」は止まったままになる。** 未所持の新刊が出たかは
+ * 揃っている間は聞きに行かない (棚に巻が足された時に聞き直す)。
  */
 export function seriesSettled(db: Db, seriesId: number): boolean {
   const ranges = db.raw
@@ -220,9 +223,6 @@ export function seriesSettled(db: Db, seriesId: number): boolean {
     )
     .all(seriesId) as { volume_from: number; volume_to: number }[];
   if (!ranges.length) return hasCoverAt(db, seriesId, SERIES_SLOT);
-
-  const row = db.raw.prepare('SELECT completed, completed_user FROM series WHERE id = ?').get(seriesId);
-  if (!row || !completedOf(row as Record<string, unknown>).completed) return false;
 
   const slots = new Set(
     (db.raw.prepare('SELECT slot FROM covers WHERE series_id = ?').all(seriesId) as { slot: string }[])
