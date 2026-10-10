@@ -251,8 +251,13 @@ export interface VolumeCoverResult {
  * 抜けている巻は拾えない。手元ではそれが 2703 巻あった — 棚の一覧は埋まって見えるのに、
  * 作品を開くと中身が歯抜け、という状態。ここがそれを埋める。
  *
- * **NDL は飛ばす。** これらの巻は enrichSeries が既に NDL のサムネイルを試して
+ * **単巻で持っている巻は NDL を飛ばす。** enrichSeries が既に NDL のサムネイルを試して
  * 取れなかったものなので、もう一度聞いても答えは変わらない。楽天から先に行く。
+ *
+ * **合本でしか持っていない巻は NDL から聞く。** enrichSeries は合本を板に並べないので
+ * (合本は覆う巻の絵を借りる)、その巻の ISBN はまだ一度も NDL に聞いていない。
+ * ここで飛ばすと、合本しか無い作品 (とらわれの身の上 第01-05巻など) は NDL が
+ * 書影を持っていても棚に絵が付かない — 人が「サムネ変更」を開くと NDL の絵が出るのに。
  *
  * 進み具合は `bib.cover_tried_at` が持つ。**取れなかった時にも押す** —
  * 押さないと、どこにも書影の無い巻を毎回選び直して先へ進まなくなる。
@@ -271,7 +276,10 @@ export async function fillVolumeCovers(
   const retryBefore = new Date(Date.now() - (opts.retryAfterDays ?? 60) * 86_400_000).toISOString();
   const rows = db.raw
     .prepare(
-      `SELECT b.id AS bib_id, b.series_id, b.volume_no, b.isbn
+      `SELECT b.id AS bib_id, b.series_id, b.volume_no, b.isbn,
+              EXISTS (SELECT 1 FROM volumes v1
+                       WHERE v1.series_id = b.series_id AND v1.present = 1 AND v1.unit = '巻'
+                         AND v1.volume_from = b.volume_no AND v1.volume_to = b.volume_no) AS single
          FROM bib b
          JOIN series s ON s.id = b.series_id
         WHERE s.present = 1
@@ -299,6 +307,7 @@ export async function fillVolumeCovers(
     series_id: number;
     volume_no: number;
     isbn: string;
+    single: number;
   }[];
 
   const touched = new Set<number>();
@@ -308,7 +317,7 @@ export async function fillVolumeCovers(
       // 印は**先に**押す。途中で落ちても同じ巻で足踏みしないため
       db.markCoverTried(Number(r.bib_id));
       const provider = await fetchCover(db, cfg, Number(r.series_id), volumeSlot(Number(r.volume_no)), String(r.isbn), {
-        skipNdl: true,
+        skipNdl: Boolean(r.single),
       });
       if (provider) {
         out.written++;
