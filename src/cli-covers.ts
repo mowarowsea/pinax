@@ -3,7 +3,7 @@
  *
  *   npm run covers                 … 巻の抜けを 200 巻ぶん埋める
  *   npm run covers -- 2000         … 2000 巻ぶん
- *   npm run covers -- 2000 series  … 表紙の無い「作品」の方を埋める
+ *   npm run covers -- 2000 series  … 「作品」の方を回る (書誌の取り直しと表紙の抜け)
  *   npm run covers -- 2000 retry   … 一度試して駄目だった巻もやり直す
  *
  * `retry` は提供元を足した後に使う。普段は一度試した巻を 60 日は選び直さないので、

@@ -385,7 +385,7 @@ export function buildServer(db: Db, cfg: Config, opts: { onScan?: () => void } =
 
   /**
    * 作品の中で抜けている巻の表紙を埋める。
-   * 巡回の fillMissingCovers が「表紙の無い作品」を見るのに対し、こちらは
+   * 巡回の fillMissingCovers が作品を 1 つずつ回るのに対し、こちらは
    * **ISBN は分かっているのに表紙が無い巻**を見る (楽天の鍵が要る)。
    */
   app.post<{ Body: { limit?: number } }>('/api/covers/fill-volumes', async (req) => {

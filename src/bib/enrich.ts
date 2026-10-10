@@ -1,8 +1,8 @@
 import type { Config } from '../config.js';
-import { SERIES_SLOT, volumeSlot } from '../cover-slot.js';
-import type { Db } from '../db.js';
+import { SERIES_SLOT, slotKey, volumeSlot } from '../cover-slot.js';
+import { completedOf, type Db } from '../db.js';
 import { ProviderStopError } from './cache.js';
-import { fetchCover, refreshSeriesCover } from './covers.js';
+import { fetchCover, hasCoverAt, refreshSeriesCover } from './covers.js';
 import { byVolume, searchNdl } from './ndl.js';
 import {
   bibOfNdl, ndlCandidates, pasteCovers, sideCoverTargets, writeBib, type CoverTarget,
@@ -90,7 +90,9 @@ export async function enrichSeries(db: Db, cfg: Config, seriesId: number, opts: 
    */
   const pick = db.getSeriesPick(seriesId);
   if (pick) {
-    const r = await applyPick(db, cfg, seriesId, { pick, coverBudget: opts.coverBudget, refresh: opts.refresh });
+    const r = await applyPick(db, cfg, seriesId, {
+      pick, coverBudget: opts.coverBudget, refresh: opts.refresh, keep: !opts.refresh,
+    });
     return {
       ...out,
       recordCount: r.recordCount, publishedMax: r.publishedMax, bibWritten: r.bibWritten,
@@ -196,11 +198,55 @@ function hasVolumeCover(db: Db, seriesId: number): boolean {
 }
 
 /**
- * 表紙の無い作品を順に埋めていく背景仕事。
+ * 作品を巡回から外してよいか。**外してよいのは、もう外に聞いても何も増えない作品だけ。**
+ *
+ *   完結の印がある (フォルダの `(完)` か、人の指定)  … 新刊は出ない
+ *   持っている巻の表紙が全部ある                    … 取りに行く絵が残っていない
+ *
+ * 合本 (第01-05巻) は覆う巻を 1 巻ずつ見る。合本は覆う巻の絵を借りて出すので
+ * (catalog.ts の coverFor)、覆う巻が全部埋まっていれば合本の板も埋まって見える。
+ *
+ * 巻を 1 つも持っていない作品 (単巻もの) は、代表表紙があれば外す。
+ *
+ * 以前は「代表表紙がある」だけで外していた。それだと 1 枚付いた時点で二度と
+ * 書誌を取り直さず、「第5巻まで確認」が取った日のまま止まって新刊を見逃し、
+ * 取った後に出た巻は ISBN が無いので巻ごとの巡回にも乗らなかった。
+ */
+export function seriesSettled(db: Db, seriesId: number): boolean {
+  const ranges = db.raw
+    .prepare(
+      `SELECT volume_from, volume_to FROM volumes
+        WHERE series_id = ? AND present = 1 AND unit = '巻'`
+    )
+    .all(seriesId) as { volume_from: number; volume_to: number }[];
+  if (!ranges.length) return hasCoverAt(db, seriesId, SERIES_SLOT);
+
+  const row = db.raw.prepare('SELECT completed, completed_user FROM series WHERE id = ?').get(seriesId);
+  if (!row || !completedOf(row as Record<string, unknown>).completed) return false;
+
+  const slots = new Set(
+    (db.raw.prepare('SELECT slot FROM covers WHERE series_id = ?').all(seriesId) as { slot: string }[])
+      .map((r) => String(r.slot))
+  );
+  return ranges.every((r) => {
+    for (let v = Number(r.volume_from); v <= Number(r.volume_to); v++) {
+      if (!slots.has(slotKey(volumeSlot(v)))) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * 作品を順に回って、書誌を取り直し、抜けている表紙を埋める背景仕事。
+ *
+ * **巡回から外すのは `seriesSettled` の作品だけ。** それ以外は `retryAfterDays` ごとに
+ * 選び直す — 新刊の書誌と、その巻の ISBN はここでしか入らない。
+ * NDL の答えは cache.ts が `bib.ttlDays` (既定 90 日) 持つので、それより短い間隔で
+ * 来ても外へは出ず、取っておいた答えで表紙の抜けだけ埋め直す。
  *
  * **予算で必ず打ち切る。** 485 作品 5000 巻を一息に取りに行くと相手に迷惑がかかるし、
  * 途中で失敗した時にどこまで進んだか分からなくなる。呼ばれるたびに少しずつ進め、
- * 進み具合は covers 表そのものが持つ (別に進捗表を作らない)。
+ * 進み具合は `series.enriched_at` が持つ (別に進捗表を作らない)。
  */
 export async function fillMissingCovers(
   db: Db,
@@ -210,18 +256,19 @@ export async function fillMissingCovers(
   // 一度聞きに行った作品は当分選び直さない。NDL に書影が無い作品は何度やっても
   // 取れないので、そこで止まると後ろの作品が永久に埋まらない
   const retryBefore = new Date(Date.now() - (opts.retryAfterDays ?? 30) * 86_400_000).toISOString();
+  const limit = Math.min(opts.seriesLimit ?? 5, 100);
   const rows = db.raw
     .prepare(
       `SELECT id FROM series s
-        WHERE s.present = 1
-          AND NOT EXISTS (SELECT 1 FROM covers c WHERE c.series_id = s.id AND c.slot = '')
-          AND (s.enriched_at IS NULL OR s.enriched_at < ?)
-        ORDER BY s.enriched_at IS NOT NULL, s.enriched_at, s.id LIMIT ?`
+        WHERE s.present = 1 AND (s.enriched_at IS NULL OR s.enriched_at < ?)
+        ORDER BY s.enriched_at IS NOT NULL, s.enriched_at, s.id`
     )
-    .all(retryBefore, Math.min(opts.seriesLimit ?? 5, 100)) as { id: number }[];
+    .all(retryBefore) as { id: number }[];
 
   const out: EnrichResult[] = [];
   for (const r of rows) {
+    if (out.length >= limit) break;
+    if (seriesSettled(db, Number(r.id))) continue;
     out.push(await enrichSeries(db, cfg, Number(r.id), { coverBudget: opts.coverBudgetPerSeries ?? 30 }));
   }
   return out;
@@ -244,8 +291,8 @@ export interface VolumeCoverResult {
 /**
  * **ISBN は分かっているのに表紙が無い巻**を埋める背景仕事。
  *
- * fillMissingCovers が見ているのは「代表表紙すら無い作品」で、作品の中の
- * 抜けている巻は拾えない。手元ではそれが 2703 巻あった — 棚の一覧は埋まって見えるのに、
+ * fillMissingCovers は作品を 1 つずつ回るので、1 作品 20 枚の予算からあふれた巻や
+ * 合本でしか持っていない巻を拾いきれない。手元ではそれが 2703 巻あった — 棚の一覧は埋まって見えるのに、
  * 作品を開くと中身が歯抜け、という状態。ここがそれを埋める。
  *
  * **NDL に聞いた印 (`bib.ndl_tried_at`) がある巻だけ NDL を飛ばす。** 一度試して

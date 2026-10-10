@@ -76,7 +76,10 @@ export function writeBib(db: Db, seriesId: number, volumeNo: number | null, e: B
        ON CONFLICT(series_id, volume_no, provider) DO UPDATE SET
          isbn = excluded.isbn, title = excluded.title, author = excluded.author,
          publisher = excluded.publisher, pubdate = excluded.pubdate, cover_url = excluded.cover_url,
-         raw = excluded.raw, fetched_at = excluded.fetched_at`
+         raw = excluded.raw, fetched_at = excluded.fetched_at,
+         -- 別の本に替わったら「試した」印は持ち越さない。前の ISBN で駄目だっただけ
+         cover_tried_at = CASE WHEN bib.isbn IS excluded.isbn THEN bib.cover_tried_at END,
+         ndl_tried_at = CASE WHEN bib.isbn IS excluded.isbn THEN bib.ndl_tried_at END`
     )
     .run(
       seriesId, volumeNo, e.provider, e.isbn, e.title, e.author, e.publisher, e.pubdate,

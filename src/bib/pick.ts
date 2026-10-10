@@ -163,7 +163,19 @@ export async function applyPick(
   db: Db,
   cfg: Config,
   seriesId: number,
-  opts: { pick?: SeriesPick; coverBudget?: number; refresh?: boolean } = {}
+  opts: {
+    pick?: SeriesPick;
+    coverBudget?: number;
+    refresh?: boolean;
+    /**
+     * 巡回が同じ指定のまま書誌を取り直しに来た時。**書誌も表紙も落とさず上から書く。**
+     *
+     * 落とすのは「人が束を選び直した」時の話 (取り違えた束の行を残さないため)。
+     * 束が変わっていないのに巡回のたびに落とすと、20 枚の予算からあふれた巻の表紙が
+     * 毎回消え、巻ごとの「試した」印も消えて同じ巻を叩き直すことになる。
+     */
+    keep?: boolean;
+  } = {}
 ): Promise<PickResult> {
   const s = db.getSeries(seriesId);
   const pick = opts.pick ?? db.getSeriesPick(seriesId);
@@ -200,8 +212,10 @@ export async function applyPick(
   }
   out.recordCount = group.count;
 
-  db.raw.prepare('DELETE FROM bib WHERE series_id = ?').run(seriesId);
-  db.raw.prepare('DELETE FROM covers WHERE series_id = ? AND pinned = 0').run(seriesId);
+  if (!opts.keep) {
+    db.raw.prepare('DELETE FROM bib WHERE series_id = ?').run(seriesId);
+    db.raw.prepare('DELETE FROM covers WHERE series_id = ? AND pinned = 0').run(seriesId);
+  }
   out.replaced = true;
 
   const byVol = byVolumeOf(group);
@@ -251,10 +265,10 @@ export async function applyPick(
   targets.push(...sideCoverTargets(db, seriesId, s.title, group.items));
 
   // pinned 以外の行は上で落としてあるので、残っているのは人が選んだ 1 枚だけ。
-  // **貼り直しに来た以上、残りは全部取り直す**
+  // **貼り直しに来た以上、残りは全部取り直す** (巡回の取り直しは、無い板だけ埋める)
   const pasted = await pasteCovers(db, cfg, seriesId, targets, {
     budget: opts.coverBudget,
-    overwrite: true,
+    overwrite: !opts.keep,
   });
   out.coversWritten += pasted.written;
   out.coverMissed.push(...pasted.missed);
